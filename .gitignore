@@ -1,0 +1,7 @@
+.DS_Store
+STed/.build/
+STed/.swiftpm/
+STed/DerivedData/
+*.xcuserstate
+xcuserdata/
+STed2.07m/
