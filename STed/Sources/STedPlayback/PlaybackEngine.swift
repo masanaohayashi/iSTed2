@@ -121,10 +121,12 @@ public final class PlaybackEngine: ObservableObject {
         try? rebuildPlayback(resetPosition: false)
     }
 
-    public func insertNoteBefore(trackID: Int, at index: Int) {
-        guard let trackIndex = song?.tracks.firstIndex(where: { $0.id == trackID }) else { return }
-        song?.tracks[trackIndex].insertNoteBefore(at: index)
+    @discardableResult
+    public func insertNoteBefore(trackID: Int, at index: Int) -> TrackEvent? {
+        guard let trackIndex = song?.tracks.firstIndex(where: { $0.id == trackID }) else { return nil }
+        let insertedEvent = song?.tracks[trackIndex].insertNoteBefore(at: index)
         try? rebuildPlayback(resetPosition: false)
+        return insertedEvent
     }
 
     public func deleteEvent(trackID: Int, at index: Int) {

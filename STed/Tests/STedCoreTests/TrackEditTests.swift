@@ -40,8 +40,9 @@ final class TrackEditTests: XCTestCase {
             ]
         )
 
-        track.insertNoteBefore(at: 2)
+        let inserted = track.insertNoteBefore(at: 2)
 
+        XCTAssertEqual(inserted, track.events[2])
         XCTAssertEqual(track.events[2], track.events[0])
         XCTAssertEqual(track.events.map(\.command), [60, 0xeb, 60, 64, 0xfe])
     }

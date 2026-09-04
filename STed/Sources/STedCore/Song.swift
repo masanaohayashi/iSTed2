@@ -228,7 +228,8 @@ public struct Track: Equatable, Identifiable, Sendable {
         ensureTerminator()
     }
 
-    public mutating func insertNoteBefore(at index: Int) {
+    @discardableResult
+    public mutating func insertNoteBefore(at index: Int) -> TrackEvent {
         let clamped = min(max(0, index), terminatorIndex)
         let previousNote = events[..<clamped]
             .reversed()
@@ -236,6 +237,7 @@ public struct Track: Equatable, Identifiable, Sendable {
         let event = previousNote ?? .defaultInsertedNote
         events.insert(event, at: clamped)
         ensureTerminator()
+        return event
     }
 
     public mutating func deleteEvent(at index: Int) {

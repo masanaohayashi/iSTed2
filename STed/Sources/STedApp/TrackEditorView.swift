@@ -23,7 +23,7 @@ struct TrackEditorView: View {
     private struct InlineEditor: Equatable {
         let row: Int
         let kind: InlineEditorKind
-        let initialDisplayText: String?
+        let copiedNotePreview: String?
 
         var column: EventColumn {
             switch kind {
@@ -298,7 +298,7 @@ struct TrackEditorView: View {
            inlineEditor.column == column {
             inlineEditorField(
                 kind: inlineEditor.kind,
-                initialDisplayText: inlineEditor.initialDisplayText,
+                copiedNotePreview: inlineEditor.copiedNotePreview,
                 isTrailing: column != .note
             )
                 .frame(maxWidth: .infinity, alignment: alignment)
@@ -318,13 +318,13 @@ struct TrackEditorView: View {
 
     private func inlineEditorField(
         kind: InlineEditorKind,
-        initialDisplayText: String?,
+        copiedNotePreview: String?,
         isTrailing: Bool
     ) -> some View {
         TrackerInlineEditorField(
             mode: inlineEditorMode(for: kind),
             initialText: inlineText,
-            initialDisplayText: initialDisplayText,
+            copiedNotePreview: copiedNotePreview,
             isTrailing: isTrailing,
             onTextChange: { text in
                 inlineText = text
@@ -441,16 +441,9 @@ struct TrackEditorView: View {
         guard let track else { return }
         resetInlineEditor()
         let index = min(max(0, cursor.row), track.terminatorIndex)
-        engine.insertNoteBefore(trackID: trackID, at: index)
+        let insertedEvent = engine.insertNoteBefore(trackID: trackID, at: index)
         cursor = TrackCursor(row: index, column: .note)
-        let initialDisplayText: String?
-        if let insertedTrack = engine.song?.tracks.first(where: { $0.id == trackID }),
-           insertedTrack.events.indices.contains(index) {
-            initialDisplayText = insertedTrack.events[index].noteInputText
-        } else {
-            initialDisplayText = nil
-        }
-        if !beginNoteEdit(initialText: "", initialDisplayText: initialDisplayText) {
+        if !beginNoteEdit(initialText: "", copiedNotePreview: insertedEvent?.noteInputText) {
             isKeyboardFocused = true
         }
     }
@@ -480,7 +473,7 @@ struct TrackEditorView: View {
         inlineEditor = InlineEditor(
             row: index,
             kind: .numeric(cursor.column),
-            initialDisplayText: nil
+            copiedNotePreview: nil
         )
         isKeyboardFocused = false
         return true
@@ -492,7 +485,7 @@ struct TrackEditorView: View {
 
     private func beginNoteEdit(
         initialText: String,
-        initialDisplayText: String? = nil
+        copiedNotePreview: String? = nil
     ) -> Bool {
         guard let track else { return false }
         let index = cursor.row
@@ -506,7 +499,7 @@ struct TrackEditorView: View {
         inlineEditor = InlineEditor(
             row: index,
             kind: .note,
-            initialDisplayText: initialDisplayText
+            copiedNotePreview: copiedNotePreview
         )
         isKeyboardFocused = false
         return true
@@ -600,25 +593,25 @@ private struct TrackerInlineEditorField: View {
     private static let bufferWidth = CGFloat(TrackerTextInput.maximumLength) * characterWidth
 
     let mode: TrackerTextInputMode
-    let initialDisplayText: String?
+    let copiedNotePreview: String?
     let isTrailing: Bool
     let onTextChange: (String) -> Void
     let onCancel: () -> Void
 
     @State private var input: TrackerTextInputSession
-    @State private var hasInteracted = false
+    @State private var hasDismissedPreview = false
     @FocusState private var isFocused: Bool
 
     init(
         mode: TrackerTextInputMode,
         initialText: String,
-        initialDisplayText: String?,
+        copiedNotePreview: String?,
         isTrailing: Bool,
         onTextChange: @escaping (String) -> Void,
         onCancel: @escaping () -> Void
     ) {
         self.mode = mode
-        self.initialDisplayText = initialDisplayText
+        self.copiedNotePreview = copiedNotePreview
         self.isTrailing = isTrailing
         self.onTextChange = onTextChange
         self.onCancel = onCancel
@@ -631,9 +624,9 @@ private struct TrackerInlineEditorField: View {
         TimelineView(.periodic(from: .now, by: 0.5)) { timeline in
             let caretVisible = Int(timeline.date.timeIntervalSinceReferenceDate / 0.5)
                 .isMultiple(of: 2)
-            let displayText = hasInteracted || !input.text.isEmpty
+            let displayText = hasDismissedPreview || !input.text.isEmpty
                 ? input.text
-                : initialDisplayText ?? input.text
+                : copiedNotePreview ?? input.text
 
             ZStack(alignment: .leading) {
                 HStack(spacing: 0) {
@@ -688,11 +681,11 @@ private struct TrackerInlineEditorField: View {
             default:
                 return .ignored
             }
-            hasInteracted = true
+            hasDismissedPreview = true
             return .handled
         }
         .onKeyPress(.clear, phases: .down) { _ in
-            hasInteracted = true
+            hasDismissedPreview = true
             input.clear()
             onTextChange(input.text)
             return .handled
@@ -706,7 +699,7 @@ private struct TrackerInlineEditorField: View {
             default:
                 return .ignored
             }
-            hasInteracted = true
+            hasDismissedPreview = true
             onTextChange(input.text)
             return .handled
         }
@@ -715,19 +708,19 @@ private struct TrackerInlineEditorField: View {
                 return .ignored
             }
             if press.key == .delete || press.characters == "\u{8}" {
-                hasInteracted = true
+                hasDismissedPreview = true
                 input.backspace()
                 onTextChange(input.text)
                 return .handled
             }
             if press.key == .deleteForward || press.characters == "\u{7f}" {
-                hasInteracted = true
+                hasDismissedPreview = true
                 input.delete()
                 onTextChange(input.text)
                 return .handled
             }
             guard !press.characters.isEmpty else { return .ignored }
-            hasInteracted = true
+            hasDismissedPreview = true
             input.insert(press.characters)
             onTextChange(input.text)
             return .handled
