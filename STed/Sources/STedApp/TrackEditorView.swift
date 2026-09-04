@@ -138,8 +138,11 @@ struct TrackEditorView: View {
             return moveCursor(for: press.key, rowCount: rows.count)
         }
         .onKeyPress(.return, phases: .down) { _ in
-            guard inlineEditor == nil else { return .ignored }
-            insertNoteBeforeCursor()
+            if inlineEditor != nil {
+                commitInlineEditor()
+            } else {
+                insertNoteBeforeCursor()
+            }
             return .handled
         }
         .onKeyPress(phases: .down) { press in
@@ -318,9 +321,6 @@ struct TrackEditorView: View {
             isTrailing: isTrailing,
             onTextChange: { text in
                 inlineText = text
-            },
-            onCommit: { text in
-                commitInlineEditor(text: text)
             },
             onCancel: {
                 cancelInlineEditor()
@@ -571,7 +571,6 @@ private struct TrackerInlineEditorField: View {
     let mode: TrackerTextInputMode
     let isTrailing: Bool
     let onTextChange: (String) -> Void
-    let onCommit: (String) -> Void
     let onCancel: () -> Void
 
     @State private var input: TrackerTextInputSession
@@ -582,13 +581,11 @@ private struct TrackerInlineEditorField: View {
         initialText: String,
         isTrailing: Bool,
         onTextChange: @escaping (String) -> Void,
-        onCommit: @escaping (String) -> Void,
         onCancel: @escaping () -> Void
     ) {
         self.mode = mode
         self.isTrailing = isTrailing
         self.onTextChange = onTextChange
-        self.onCommit = onCommit
         self.onCancel = onCancel
         _input = State(
             initialValue: TrackerTextInputSession(mode: mode, initialText: initialText)
@@ -640,12 +637,24 @@ private struct TrackerInlineEditorField: View {
         .onAppear {
             isFocused = true
         }
-        .onKeyPress(.return, phases: .down) { _ in
-            onCommit(input.text)
-            return .handled
-        }
         .onKeyPress(.escape, phases: .down) { _ in
             onCancel()
+            return .handled
+        }
+        .onKeyPress(keys: [.home, .end], phases: [.down, .repeat]) { press in
+            switch press.key {
+            case .home:
+                input.moveToBeginning()
+            case .end:
+                input.moveToEnd()
+            default:
+                return .ignored
+            }
+            return .handled
+        }
+        .onKeyPress(.clear, phases: .down) { _ in
+            input.clear()
+            onTextChange(input.text)
             return .handled
         }
         .onKeyPress(keys: [.leftArrow, .rightArrow], phases: [.down, .repeat]) { press in
@@ -661,13 +670,16 @@ private struct TrackerInlineEditorField: View {
             return .handled
         }
         .onKeyPress(phases: .down) { press in
-            if press.key == .delete || press.characters == "\u{7f}" {
-                input.delete()
+            if press.key == .return {
+                return .ignored
+            }
+            if press.key == .delete || press.characters == "\u{8}" {
+                input.backspace()
                 onTextChange(input.text)
                 return .handled
             }
-            if press.characters == "\u{8}" {
-                input.backspace()
+            if press.key == .deleteForward || press.characters == "\u{7f}" {
+                input.delete()
                 onTextChange(input.text)
                 return .handled
             }

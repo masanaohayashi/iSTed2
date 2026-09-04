@@ -201,6 +201,11 @@ public struct TrackerTextInputSession: Equatable, Sendable {
         text = String(characters)
     }
 
+    public mutating func clear() {
+        text = ""
+        caretPosition = 0
+    }
+
     private func normalizedCharacter(_ character: Character) -> Character? {
         switch mode {
         case .numeric:

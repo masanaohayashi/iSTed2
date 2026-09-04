@@ -60,6 +60,24 @@ final class TrackEditInputTests: XCTestCase {
         XCTAssertEqual(input.caretPosition, 4)
     }
 
+    func testInlineInputKeepsOriginalCursorEditingOperations() {
+        var input = TrackerTextInputSession(mode: .note, initialText: "D3")
+
+        input.moveLeft()
+        input.insert("#")
+        XCTAssertEqual(input.text, "D#3")
+        XCTAssertEqual(input.caretPosition, 2)
+
+        input.backspace()
+        XCTAssertEqual(input.text, "D3")
+        input.delete()
+        XCTAssertEqual(input.text, "D")
+
+        input.clear()
+        XCTAssertEqual(input.text, "")
+        XCTAssertEqual(input.caretPosition, 0)
+    }
+
     func testNoteTextInputUsesTheOriginalCtcNoteSyntax() {
         XCTAssertEqual(TrackerTextInput.noteNumber("C4"), 60)
         XCTAssertEqual(TrackerTextInput.noteNumber("C#4"), 61)
