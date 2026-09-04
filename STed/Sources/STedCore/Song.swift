@@ -14,6 +14,15 @@ public enum TrackMode: Equatable, Sendable {
     }
 
     public var isMuted: Bool { self == .mute }
+
+    public var rcpByte: UInt8 {
+        switch self {
+        case .play: 0
+        case .mute: 1
+        case .mix: 2
+        case .rec: 3
+        }
+    }
 }
 
 public struct MusicalTime: Equatable, Sendable {
@@ -42,14 +51,28 @@ public struct TrackEvent: Equatable, Sendable {
         self.param1 = param1
         self.param2 = param2
     }
+
+    public static let defaultNote = TrackEvent(command: 60, delay: 48, param1: 36, param2: 100)
+    public static let defaultInsertedNote = TrackEvent(command: 60, delay: 48, param1: 46, param2: 100)
+
+    public var isTerminator: Bool {
+        command == 0xfe || command == 0xff
+    }
 }
 
 public struct EventRow: Equatable, Sendable {
     public var time: MusicalTime
     public var label: String
+    public var isTerminator: Bool
     public var st: Int
     public var gt: Int
     public var vel: Int
+    public var showsMeasure: Bool
+    public var stepNumber: Int?
+    public var noteText: String
+    public var stText: String
+    public var gtText: String
+    public var velText: String
 }
 
 public struct Track: Equatable, Identifiable, Sendable {
@@ -98,29 +121,150 @@ public struct Track: Equatable, Identifiable, Sendable {
     ) -> [EventRow] {
         var tick = startTick
         var rows: [EventRow] = []
+        var lastMeasure = 0
+        var stepInMeasure = 1
+        var previousCommand: UInt8 = 0xfd
+        var previousDelay: UInt8 = 1
+        var appendedTerminator = false
         for event in events {
-            if event.command == 0xfe || event.command == 0xff {
+            let time = MusicalTime(
+                tick: tick,
+                timeBase: timeBase,
+                beatNumerator: beatNumerator,
+                beatDenominator: beatDenominator
+            )
+            if event.isTerminator {
+                let cells = event.trackerCells
+                rows.append(
+                    EventRow(
+                        time: time,
+                        label: "End of Track",
+                        isTerminator: true,
+                        st: 0,
+                        gt: 0,
+                        vel: 0,
+                        showsMeasure: false,
+                        stepNumber: nil,
+                        noteText: cells.note,
+                        stText: cells.st,
+                        gtText: cells.gt,
+                        velText: cells.vel
+                    )
+                )
+                appendedTerminator = true
                 break
             }
+            let showsMeasure = time.measure != lastMeasure
+            if showsMeasure {
+                lastMeasure = time.measure
+                stepInMeasure = 1
+            }
+            let isNoteLike = event.command < 0xf0
+            let isChord = isNoteLike
+                && !showsMeasure
+                && previousDelay == 0
+                && previousCommand < 0xf0
+            let stepNumber: Int? = isNoteLike && !isChord ? stepInMeasure : nil
+            if isNoteLike && !isChord {
+                stepInMeasure += 1
+            }
+            let cells = event.trackerCells
             rows.append(
                 EventRow(
-                    time: MusicalTime(
-                        tick: tick,
-                        timeBase: timeBase,
-                        beatNumerator: beatNumerator,
-                        beatDenominator: beatDenominator
-                    ),
+                    time: time,
                     label: event.displayLabel,
+                    isTerminator: false,
                     st: Int(event.delay),
                     gt: Int(event.param1),
-                    vel: Int(event.param2)
+                    vel: Int(event.param2),
+                    showsMeasure: showsMeasure,
+                    stepNumber: stepNumber,
+                    noteText: cells.note,
+                    stText: cells.st,
+                    gtText: cells.gt,
+                    velText: cells.vel
                 )
             )
+            previousCommand = event.command
+            previousDelay = event.delay
             if event.command < 0xf5 {
                 tick += Int(event.delay)
             }
         }
+        if !appendedTerminator {
+            let time = MusicalTime(
+                tick: tick,
+                timeBase: timeBase,
+                beatNumerator: beatNumerator,
+                beatDenominator: beatDenominator
+            )
+            rows.append(
+                EventRow(
+                    time: time,
+                    label: "End of Track",
+                    isTerminator: true,
+                    st: 0,
+                    gt: 0,
+                    vel: 0,
+                    showsMeasure: false,
+                    stepNumber: nil,
+                    noteText: "End of Track",
+                    stText: "",
+                    gtText: "",
+                    velText: ""
+                )
+            )
+        }
         return rows
+    }
+
+    public var terminatorIndex: Int {
+        events.firstIndex(where: \.isTerminator) ?? events.count
+    }
+
+    public mutating func insertEvent(_ event: TrackEvent = .defaultNote, at index: Int) {
+        let clamped = min(max(0, index), terminatorIndex)
+        events.insert(event, at: clamped)
+        ensureTerminator()
+    }
+
+    public mutating func insertNoteBefore(at index: Int) {
+        let clamped = min(max(0, index), terminatorIndex)
+        let previousNote = events[..<clamped]
+            .reversed()
+            .first(where: { $0.command < 0x80 })
+        let event = previousNote ?? .defaultInsertedNote
+        events.insert(event, at: clamped)
+        ensureTerminator()
+    }
+
+    public mutating func deleteEvent(at index: Int) {
+        let end = terminatorIndex
+        guard end > 0, index >= 0, index < end else { return }
+        events.remove(at: index)
+        ensureTerminator()
+    }
+
+    public mutating func updateAttributes(
+        midiChannel: Int?,
+        startTick: Int,
+        keyShift: Int,
+        memo: String
+    ) {
+        if let midiChannel, (1...16).contains(midiChannel) {
+            self.midiChannel = midiChannel
+        } else {
+            self.midiChannel = nil
+        }
+        self.startTick = min(99, max(-99, startTick))
+        self.keyShift = min(63, max(-64, keyShift))
+        self.memo = String(memo.prefix(36))
+    }
+
+    private mutating func ensureTerminator() {
+        if events.last?.isTerminator != true {
+            events.append(TrackEvent(command: 0xfe, delay: 0, param1: 0, param2: 0))
+        }
     }
 }
 
@@ -163,6 +307,9 @@ public struct Song: Equatable, Sendable {
 
 extension TrackEvent {
     var displayLabel: String {
+        if isTerminator {
+            return "End of Track"
+        }
         if command < 0x80 {
             return noteName(command)
         }

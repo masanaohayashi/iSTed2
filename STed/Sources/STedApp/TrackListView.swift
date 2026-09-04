@@ -9,6 +9,8 @@ struct TrackListView: View {
     @Binding var isSettingsPresented: Bool
 
     @State private var isImporterPresented = false
+    @State private var isExporterPresented = false
+    @State private var exportDocument = RCPFileDocument()
 
     var body: some View {
         List {
@@ -50,7 +52,21 @@ struct TrackListView: View {
                 Button("Open RCP") { isImporterPresented = true }
             }
             ToolbarItem(placement: .automatic) {
+                Button("Save RCP") { saveRCP() }
+                    .disabled(engine.song == nil)
+            }
+            ToolbarItem(placement: .automatic) {
                 Button("Demo") { loadDemo() }
+            }
+        }
+        .fileExporter(
+            isPresented: $isExporterPresented,
+            document: exportDocument,
+            contentType: .data,
+            defaultFilename: engine.exportFileName
+        ) { result in
+            if case .failure(let error) = result {
+                engine.reportError(error)
             }
         }
         .fileImporter(
@@ -170,6 +186,15 @@ struct TrackListView: View {
     private func loadDemo() {
         do {
             try engine.loadDemo()
+        } catch {
+            engine.reportError(error)
+        }
+    }
+
+    private func saveRCP() {
+        do {
+            exportDocument = RCPFileDocument(data: try engine.encodedRCP())
+            isExporterPresented = true
         } catch {
             engine.reportError(error)
         }

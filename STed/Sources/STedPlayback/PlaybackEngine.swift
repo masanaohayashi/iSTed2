@@ -96,6 +96,60 @@ public final class PlaybackEngine: ObservableObject {
         try? rebuildPlayback(resetPosition: false)
     }
 
+    public func encodedRCP() throws -> Data {
+        guard let song else { throw RCPError.noTracks }
+        return RCPEncoder.encode(song)
+    }
+
+    public var exportFileName: String {
+        let base = title.isEmpty ? "song" : title
+        let cleaned = base.replacingOccurrences(of: "/", with: "-")
+        return cleaned.hasSuffix(".rcp") || cleaned.hasSuffix(".RCP") ? cleaned : "\(cleaned).rcp"
+    }
+
+    public func updateEvent(trackID: Int, index: Int, _ event: TrackEvent) {
+        guard let trackIndex = song?.tracks.firstIndex(where: { $0.id == trackID }),
+              song?.tracks[trackIndex].events.indices.contains(index) == true
+        else { return }
+        song?.tracks[trackIndex].events[index] = event
+        try? rebuildPlayback(resetPosition: false)
+    }
+
+    public func insertEvent(trackID: Int, at index: Int, _ event: TrackEvent = .defaultNote) {
+        guard let trackIndex = song?.tracks.firstIndex(where: { $0.id == trackID }) else { return }
+        song?.tracks[trackIndex].insertEvent(event, at: index)
+        try? rebuildPlayback(resetPosition: false)
+    }
+
+    public func insertNoteBefore(trackID: Int, at index: Int) {
+        guard let trackIndex = song?.tracks.firstIndex(where: { $0.id == trackID }) else { return }
+        song?.tracks[trackIndex].insertNoteBefore(at: index)
+        try? rebuildPlayback(resetPosition: false)
+    }
+
+    public func deleteEvent(trackID: Int, at index: Int) {
+        guard let trackIndex = song?.tracks.firstIndex(where: { $0.id == trackID }) else { return }
+        song?.tracks[trackIndex].deleteEvent(at: index)
+        try? rebuildPlayback(resetPosition: false)
+    }
+
+    public func updateTrack(
+        trackID: Int,
+        midiChannel: Int?,
+        startTick: Int,
+        keyShift: Int,
+        memo: String
+    ) {
+        guard let trackIndex = song?.tracks.firstIndex(where: { $0.id == trackID }) else { return }
+        song?.tracks[trackIndex].updateAttributes(
+            midiChannel: midiChannel,
+            startTick: startTick,
+            keyShift: keyShift,
+            memo: memo
+        )
+        try? rebuildPlayback(resetPosition: false)
+    }
+
     public func play() async throws {
         guard sequence != nil else { return }
         if !audio.isAttached {
