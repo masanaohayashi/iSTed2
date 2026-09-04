@@ -14,16 +14,31 @@ public struct TrackerCells: Equatable, Sendable {
 
 extension TrackEvent {
     public var trackerCells: TrackerCells {
+        trackerCells(nextEvents: ArraySlice<TrackEvent>())
+    }
+
+    func trackerCells(nextEvents: ArraySlice<TrackEvent>) -> TrackerCells {
         if isTerminator {
             return TrackerCells(note: "End of Track", st: "", gt: "", vel: "")
         }
         if command < 0x80 {
             var gt = "\(param1)"
-            if delay > 0 && param1 > delay {
+            let comparisonStep: Int?
+            if delay > 0 {
+                comparisonStep = Int(delay)
+            } else {
+                comparisonStep = nextEvents.first {
+                    $0.command < 0xf7 && $0.delay > 0
+                }.map { Int($0.delay) }
+            }
+            if let comparisonStep, param1 > comparisonStep {
                 gt += "*"
             }
+            let note = param1 != 0 && param2 != 0
+                ? stedNoteLabel(command)
+                : "   " + String(format: "%4d", Int(command))
             return TrackerCells(
-                note: stedNoteLabel(command),
+                note: note,
                 st: "\(delay)",
                 gt: gt,
                 vel: "\(param2)"

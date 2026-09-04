@@ -2,6 +2,35 @@ import XCTest
 @testable import STedCore
 
 final class TrackEditInputTests: XCTestCase {
+    func testNumericInputStartsWithTheFirstDigitAndBuildsTheValue() {
+        var input = NumericInput()
+
+        XCTAssertEqual(input.enter(4, range: EventColumn.st.numericRange), 4)
+        XCTAssertEqual(input.enter(8, range: EventColumn.st.numericRange), 48)
+    }
+
+    func testNumericInputClipsAtTheSelectedColumnMaximum() {
+        var input = NumericInput()
+
+        _ = input.enter(9, range: EventColumn.gt.numericRange)
+        _ = input.enter(9, range: EventColumn.gt.numericRange)
+        XCTAssertEqual(input.enter(9, range: EventColumn.gt.numericRange), 255)
+
+        input.reset()
+        _ = input.enter(1, range: EventColumn.note.numericRange)
+        _ = input.enter(2, range: EventColumn.note.numericRange)
+        XCTAssertEqual(input.enter(8, range: EventColumn.note.numericRange), 127)
+    }
+
+    func testSettingNumericValueClipsAndWritesTheSelectedField() {
+        let original = TrackEvent(command: 60, delay: 48, param1: 36, param2: 100)
+
+        XCTAssertEqual(original.settingNumericValue(999, in: .st).delay, 255)
+        XCTAssertEqual(original.settingNumericValue(-1, in: .gt).param1, 0)
+        XCTAssertEqual(original.settingNumericValue(999, in: .vel).param2, 127)
+        XCTAssertEqual(original.settingNumericValue(127, in: .note).command, 127)
+    }
+
     func testLowDigitPadMapsFlickDirections() {
         XCTAssertEqual(FlickPad.digitsLow.value(for: .tap), .digit(0))
         XCTAssertEqual(FlickPad.digitsLow.value(for: .left), .digit(1))

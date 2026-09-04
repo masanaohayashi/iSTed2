@@ -4,6 +4,38 @@ public enum FlickDirection: Equatable, Sendable {
 
 public enum EventColumn: Int, CaseIterable, Equatable, Sendable {
     case note, st, gt, vel
+
+    public var numericRange: ClosedRange<Int> {
+        switch self {
+        case .note, .vel: return 0...127
+        case .st, .gt: return 0...255
+        }
+    }
+}
+
+public struct NumericInput: Equatable, Sendable {
+    private var digits = ""
+
+    public init() {}
+
+    public mutating func reset() {
+        digits = ""
+    }
+
+    public mutating func enter(_ digit: Int, range: ClosedRange<Int>) -> Int {
+        guard (0...9).contains(digit), range.lowerBound <= range.upperBound else {
+            return range.lowerBound
+        }
+
+        if digits.isEmpty {
+            digits = String(digit)
+        } else {
+            digits.append(String(digit))
+        }
+
+        let enteredValue = Int(digits) ?? Int.max
+        return min(range.upperBound, max(range.lowerBound, enteredValue))
+    }
 }
 
 public enum TrackEditInput: Equatable, Sendable {
@@ -55,23 +87,49 @@ public enum FlickPad: Equatable, Sendable {
 }
 
 extension TrackEvent {
+    public func numericValue(in column: EventColumn) -> Int? {
+        switch column {
+        case .note:
+            guard command < 0x80 else { return nil }
+            return Int(command)
+        case .st:
+            return Int(delay)
+        case .gt:
+            return Int(param1)
+        case .vel:
+            return Int(param2)
+        }
+    }
+
+    public func settingNumericValue(_ value: Int, in column: EventColumn) -> TrackEvent {
+        var event = self
+        let range = column.numericRange
+        let clamped = min(range.upperBound, max(range.lowerBound, value))
+        switch column {
+        case .note:
+            guard event.command < 0x80 else { return event }
+            event.command = UInt8(clamped)
+        case .st:
+            event.delay = UInt8(clamped)
+        case .gt:
+            event.param1 = UInt8(clamped)
+        case .vel:
+            event.param2 = UInt8(clamped)
+        }
+        return event
+    }
+
     public func applying(_ input: TrackEditInput, column: EventColumn) -> TrackEvent {
         var event = self
         switch input {
         case .digit(let digit):
-            switch column {
-            case .note:
-                if event.command < 0x80 {
-                    event.command = UInt8(enterDigit(Int(event.command), digit, max: 127))
-                }
-            case .st:
-                event.delay = UInt8(enterDigit(Int(event.delay), digit, max: 255))
-            case .gt:
-                event.param1 = UInt8(enterDigit(Int(event.param1), digit, max: 255))
-            case .vel:
-                let maxValue = event.command < 0x80 ? 127 : 255
-                event.param2 = UInt8(enterDigit(Int(event.param2), digit, max: maxValue))
-            }
+            guard let currentValue = numericValue(in: column) else { return self }
+            let nextValue = enterDigit(
+                currentValue,
+                digit,
+                max: column.numericRange.upperBound
+            )
+            return settingNumericValue(nextValue, in: column)
         case .pitchClass(let classIndex):
             guard event.command < 0x80, (0...6).contains(classIndex) else { return event }
             let pitchClasses = [9, 11, 0, 2, 4, 5, 7]

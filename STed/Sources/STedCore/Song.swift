@@ -126,7 +126,7 @@ public struct Track: Equatable, Identifiable, Sendable {
         var previousCommand: UInt8 = 0xfd
         var previousDelay: UInt8 = 1
         var appendedTerminator = false
-        for event in events {
+        for (eventIndex, event) in events.enumerated() {
             let time = MusicalTime(
                 tick: tick,
                 timeBase: timeBase,
@@ -168,7 +168,7 @@ public struct Track: Equatable, Identifiable, Sendable {
             if isNoteLike && !isChord {
                 stepInMeasure += 1
             }
-            let cells = event.trackerCells
+            let cells = event.trackerCells(nextEvents: events.dropFirst(eventIndex + 1))
             rows.append(
                 EventRow(
                     time: time,

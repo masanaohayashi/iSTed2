@@ -17,6 +17,30 @@ final class TrackerDisplayTests: XCTestCase {
         XCTAssertEqual(event.trackerCells.gt, "23*")
     }
 
+    func testZeroGateOrVelocityHidesTheNoteName() {
+        let zeroGate = TrackEvent(command: 60, delay: 48, param1: 0, param2: 100)
+        let zeroVelocity = TrackEvent(command: 64, delay: 48, param1: 36, param2: 0)
+
+        XCTAssertEqual(zeroGate.trackerCells.note, "     60")
+        XCTAssertEqual(zeroVelocity.trackerCells.note, "     64")
+    }
+
+    func testZeroStepComparesGateWithTheNextPositiveStep() {
+        let track = Track(
+            id: 0,
+            number: 1,
+            events: [
+                TrackEvent(command: 60, delay: 0, param1: 24, param2: 100),
+                TrackEvent(command: 64, delay: 12, param1: 8, param2: 100),
+                TrackEvent(command: 0xfe, delay: 0, param1: 0, param2: 0)
+            ]
+        )
+
+        let rows = track.eventRows(timeBase: 48, beatNumerator: 4, beatDenominator: 4)
+
+        XCTAssertEqual(rows[0].gtText, "24*")
+    }
+
     func testChorusUsesControllerName() {
         let event = TrackEvent(command: 0xeb, delay: 1, param1: 93, param2: 50)
         let cells = event.trackerCells

@@ -884,6 +884,7 @@ private struct TrackExpander {
 
     private mutating func emitNote(tick: Int64, event: RcpEvent) throws {
         let noteValue = Int(event.command) + track.transposition
+        // STed2 treats a zero gate or velocity as a silent note event.
         guard noteValue >= 0 && noteValue <= 127 && event.param1 != 0 && event.param2 != 0 else {
             return
         }

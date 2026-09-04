@@ -18,6 +18,8 @@ struct TrackEditorView: View {
     @EnvironmentObject private var engine: PlaybackEngine
     let trackID: Int
     @State private var cursor = TrackCursor()
+    @State private var numericInput = NumericInput()
+    @State private var numericInputCursor: TrackCursor?
     @FocusState private var isKeyboardFocused: Bool
     @State private var isTrackSettingsPresented = false
 
@@ -69,10 +71,12 @@ struct TrackEditorView: View {
         }
         .onAppear {
             engine.selectedTrackID = trackID
+            resetNumericInput()
             normalizeCursor()
             isKeyboardFocused = true
         }
         .onChange(of: trackID) { _, _ in
+            resetNumericInput()
             normalizeCursor()
             isKeyboardFocused = true
         }
@@ -118,6 +122,10 @@ struct TrackEditorView: View {
         .onKeyPress(.return, phases: .down) { _ in
             insertNoteBeforeCursor()
             return .handled
+        }
+        .onKeyPress(phases: .down) { press in
+            guard let digit = keyboardDigit(from: press) else { return .ignored }
+            return applyKeyboardDigit(digit) ? .handled : .ignored
         }
     }
 
@@ -183,6 +191,7 @@ struct TrackEditorView: View {
         Text(title)
             .foregroundStyle(cursor.column == column ? TrackerPalette.cell : Color.white.opacity(0.9))
             .onTapGesture {
+                resetNumericInput()
                 cursor.column = column
                 isKeyboardFocused = true
             }
@@ -238,6 +247,7 @@ struct TrackEditorView: View {
         }
         .contentShape(Rectangle())
         .onTapGesture {
+            resetNumericInput()
             cursor.row = index
             isKeyboardFocused = true
         }
@@ -256,6 +266,7 @@ struct TrackEditorView: View {
             .background(active ? TrackerPalette.cell : Color.clear)
             .foregroundStyle(active ? TrackerPalette.crt : TrackerPalette.phosphor)
             .onTapGesture {
+                resetNumericInput()
                 cursor = TrackCursor(row: index, column: column)
                 isKeyboardFocused = true
             }
@@ -306,6 +317,7 @@ struct TrackEditorView: View {
     }
 
     private func apply(_ input: TrackEditInput) {
+        resetNumericInput()
         guard let track else { return }
         let index = cursor.row
         guard track.events.indices.contains(index), index < track.terminatorIndex else { return }
@@ -319,6 +331,7 @@ struct TrackEditorView: View {
 
     private func insertEvent() {
         guard let track else { return }
+        resetNumericInput()
         let index = min(cursor.row + 1, track.terminatorIndex)
         engine.insertEvent(trackID: trackID, at: index)
         cursor = TrackCursor(row: index, column: .note)
@@ -327,6 +340,7 @@ struct TrackEditorView: View {
 
     private func deleteEvent() {
         guard let track, cursor.row < track.terminatorIndex else { return }
+        resetNumericInput()
         let index = cursor.row
         engine.deleteEvent(trackID: trackID, at: index)
         let newTerminatorIndex = max(0, track.terminatorIndex - 1)
@@ -345,6 +359,7 @@ struct TrackEditorView: View {
         }
 
         guard let direction else { return .ignored }
+        resetNumericInput()
         cursor.move(direction, rowCount: rowCount)
         isKeyboardFocused = true
         return .handled
@@ -352,6 +367,7 @@ struct TrackEditorView: View {
 
     private func insertNoteBeforeCursor() {
         guard let track else { return }
+        resetNumericInput()
         let index = min(max(0, cursor.row), track.terminatorIndex)
         engine.insertNoteBefore(trackID: trackID, at: index)
         cursor = TrackCursor(row: index, column: .note)
@@ -369,6 +385,42 @@ struct TrackEditorView: View {
             row: min(cursor.row, max(0, rowCount - 1)),
             column: cursor.column
         )
+    }
+
+    private func applyKeyboardDigit(_ digit: Int) -> Bool {
+        guard let track else { return false }
+        let index = cursor.row
+        guard track.events.indices.contains(index),
+              index < track.terminatorIndex,
+              track.events[index].command < 0x80
+        else {
+            resetNumericInput()
+            return false
+        }
+
+        if numericInputCursor != cursor {
+            numericInput.reset()
+            numericInputCursor = cursor
+        }
+        let value = numericInput.enter(digit, range: cursor.column.numericRange)
+        let event = track.events[index].settingNumericValue(value, in: cursor.column)
+        engine.updateEvent(trackID: trackID, index: index, event)
+        isKeyboardFocused = true
+        return true
+    }
+
+    private func resetNumericInput() {
+        numericInput.reset()
+        numericInputCursor = nil
+    }
+
+    private func keyboardDigit(from press: KeyPress) -> Int? {
+        let characters = Array(press.characters)
+        guard characters.count == 1,
+              let digit = characters[0].wholeNumberValue,
+              (0...9).contains(digit)
+        else { return nil }
+        return digit
     }
 
     private func cursorMeasure(_ track: Track) -> Int {

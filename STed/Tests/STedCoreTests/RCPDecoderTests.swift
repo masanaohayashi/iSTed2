@@ -47,6 +47,44 @@ final class RCPDecoderTests: XCTestCase {
         XCTAssertEqual(sequence.events.map(\.ticks), [0, 0, 0, 36, 36, 36])
     }
 
+    func testZeroGateOrVelocityDoesNotEmitANote() throws {
+        let data = makeRCP(
+            trackEvents: [
+                [60, 48, 0, 100],
+                [64, 48, 36, 0],
+                [67, 48, 36, 100],
+                [0xfe, 0, 0, 0]
+            ]
+        )
+
+        let sequence = try RCPDecoder.decode(data)
+
+        XCTAssertEqual(sequence.events.map(\.bytes), [
+            [0x90, 67, 100],
+            [0x80, 67, 0]
+        ])
+    }
+
+    func testGateLongerThanStepKeepsTheNoteOnUntilTheGatePosition() throws {
+        let data = makeRCP(
+            trackEvents: [
+                [60, 12, 23, 100],
+                [64, 12, 8, 100],
+                [0xfe, 0, 0, 0]
+            ]
+        )
+
+        let sequence = try RCPDecoder.decode(data)
+
+        XCTAssertEqual(sequence.events.map(\.bytes), [
+            [0x90, 60, 100],
+            [0x90, 64, 100],
+            [0x80, 64, 0],
+            [0x80, 60, 0]
+        ])
+        XCTAssertEqual(sequence.events.map(\.ticks), [0, 12, 20, 23])
+    }
+
     func testDecodesControlChangeProgramChangeAndPitchBend() throws {
         let data = makeRCP(
             trackEvents: [
