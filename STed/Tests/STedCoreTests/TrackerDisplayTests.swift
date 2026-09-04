@@ -11,6 +11,12 @@ final class TrackerDisplayTests: XCTestCase {
         XCTAssertEqual(cells.vel, "70")
     }
 
+    func testNoteInputTextMatchesTheOriginalThreeCharacterEditorDisplay() {
+        let event = TrackEvent(command: 62, delay: 24, param1: 34, param2: 120)
+
+        XCTAssertEqual(event.noteInputText, "D 4")
+    }
+
     func testGateStarWhenGTExceedsST() {
         let event = TrackEvent(command: 46, delay: 12, param1: 23, param2: 125)
         XCTAssertEqual(event.trackerCells.note, "A#2  46")

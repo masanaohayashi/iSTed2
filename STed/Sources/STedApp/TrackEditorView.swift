@@ -23,6 +23,7 @@ struct TrackEditorView: View {
     private struct InlineEditor: Equatable {
         let row: Int
         let kind: InlineEditorKind
+        let initialDisplayText: String?
 
         var column: EventColumn {
             switch kind {
@@ -295,7 +296,11 @@ struct TrackEditorView: View {
         if let inlineEditor,
            inlineEditor.row == index,
            inlineEditor.column == column {
-            inlineEditorField(kind: inlineEditor.kind, isTrailing: column != .note)
+            inlineEditorField(
+                kind: inlineEditor.kind,
+                initialDisplayText: inlineEditor.initialDisplayText,
+                isTrailing: column != .note
+            )
                 .frame(maxWidth: .infinity, alignment: alignment)
         } else {
             Text(text)
@@ -313,11 +318,13 @@ struct TrackEditorView: View {
 
     private func inlineEditorField(
         kind: InlineEditorKind,
+        initialDisplayText: String?,
         isTrailing: Bool
     ) -> some View {
         TrackerInlineEditorField(
             mode: inlineEditorMode(for: kind),
             initialText: inlineText,
+            initialDisplayText: initialDisplayText,
             isTrailing: isTrailing,
             onTextChange: { text in
                 inlineText = text
@@ -436,7 +443,16 @@ struct TrackEditorView: View {
         let index = min(max(0, cursor.row), track.terminatorIndex)
         engine.insertNoteBefore(trackID: trackID, at: index)
         cursor = TrackCursor(row: index, column: .note)
-        isKeyboardFocused = true
+        let initialDisplayText: String?
+        if let insertedTrack = engine.song?.tracks.first(where: { $0.id == trackID }),
+           insertedTrack.events.indices.contains(index) {
+            initialDisplayText = insertedTrack.events[index].noteInputText
+        } else {
+            initialDisplayText = nil
+        }
+        if !beginNoteEdit(initialText: "", initialDisplayText: initialDisplayText) {
+            isKeyboardFocused = true
+        }
     }
 
     private func normalizeCursor() {
@@ -461,12 +477,23 @@ struct TrackEditorView: View {
         else { return false }
 
         inlineText = TrackerTextInput.normalizedNumeric(initialText)
-        inlineEditor = InlineEditor(row: index, kind: .numeric(cursor.column))
+        inlineEditor = InlineEditor(
+            row: index,
+            kind: .numeric(cursor.column),
+            initialDisplayText: nil
+        )
         isKeyboardFocused = false
         return true
     }
 
     private func beginNoteEdit(_ initialCharacter: Character) -> Bool {
+        beginNoteEdit(initialText: String(initialCharacter))
+    }
+
+    private func beginNoteEdit(
+        initialText: String,
+        initialDisplayText: String? = nil
+    ) -> Bool {
         guard let track else { return false }
         let index = cursor.row
         guard track.events.indices.contains(index),
@@ -475,8 +502,12 @@ struct TrackEditorView: View {
         else { return false }
 
         cursor.column = .note
-        inlineText = TrackerTextInput.normalizedNote(String(initialCharacter))
-        inlineEditor = InlineEditor(row: index, kind: .note)
+        inlineText = TrackerTextInput.normalizedNote(initialText)
+        inlineEditor = InlineEditor(
+            row: index,
+            kind: .note,
+            initialDisplayText: initialDisplayText
+        )
         isKeyboardFocused = false
         return true
     }
@@ -569,21 +600,25 @@ private struct TrackerInlineEditorField: View {
     private static let bufferWidth = CGFloat(TrackerTextInput.maximumLength) * characterWidth
 
     let mode: TrackerTextInputMode
+    let initialDisplayText: String?
     let isTrailing: Bool
     let onTextChange: (String) -> Void
     let onCancel: () -> Void
 
     @State private var input: TrackerTextInputSession
+    @State private var hasInteracted = false
     @FocusState private var isFocused: Bool
 
     init(
         mode: TrackerTextInputMode,
         initialText: String,
+        initialDisplayText: String?,
         isTrailing: Bool,
         onTextChange: @escaping (String) -> Void,
         onCancel: @escaping () -> Void
     ) {
         self.mode = mode
+        self.initialDisplayText = initialDisplayText
         self.isTrailing = isTrailing
         self.onTextChange = onTextChange
         self.onCancel = onCancel
@@ -596,6 +631,9 @@ private struct TrackerInlineEditorField: View {
         TimelineView(.periodic(from: .now, by: 0.5)) { timeline in
             let caretVisible = Int(timeline.date.timeIntervalSinceReferenceDate / 0.5)
                 .isMultiple(of: 2)
+            let displayText = hasInteracted || !input.text.isEmpty
+                ? input.text
+                : initialDisplayText ?? input.text
 
             ZStack(alignment: .leading) {
                 HStack(spacing: 0) {
@@ -603,7 +641,7 @@ private struct TrackerInlineEditorField: View {
                         Spacer(minLength: leadingEmptyWidth)
                     }
 
-                    ForEach(Array(input.text.enumerated()), id: \.offset) { _, character in
+                    ForEach(Array(displayText.enumerated()), id: \.offset) { _, character in
                         Text(String(character))
                             .frame(
                                 width: Self.characterWidth,
@@ -650,9 +688,11 @@ private struct TrackerInlineEditorField: View {
             default:
                 return .ignored
             }
+            hasInteracted = true
             return .handled
         }
         .onKeyPress(.clear, phases: .down) { _ in
+            hasInteracted = true
             input.clear()
             onTextChange(input.text)
             return .handled
@@ -666,6 +706,7 @@ private struct TrackerInlineEditorField: View {
             default:
                 return .ignored
             }
+            hasInteracted = true
             onTextChange(input.text)
             return .handled
         }
@@ -674,16 +715,19 @@ private struct TrackerInlineEditorField: View {
                 return .ignored
             }
             if press.key == .delete || press.characters == "\u{8}" {
+                hasInteracted = true
                 input.backspace()
                 onTextChange(input.text)
                 return .handled
             }
             if press.key == .deleteForward || press.characters == "\u{7f}" {
+                hasInteracted = true
                 input.delete()
                 onTextChange(input.text)
                 return .handled
             }
             guard !press.characters.isEmpty else { return .ignored }
+            hasInteracted = true
             input.insert(press.characters)
             onTextChange(input.text)
             return .handled

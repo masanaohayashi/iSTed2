@@ -13,6 +13,16 @@ public struct TrackerCells: Equatable, Sendable {
 }
 
 extension TrackEvent {
+    /// The three-character note text shown when STed2 opens note input.
+    ///
+    /// The original editor keeps the copied note visible while `sinput`'s
+    /// edit buffer is still empty. This is intentionally separate from the
+    /// full tracker cell, which also contains the numeric note value.
+    public var noteInputText: String {
+        guard command < 0x80 else { return "" }
+        return String(stedNoteLabel(command).prefix(3))
+    }
+
     public var trackerCells: TrackerCells {
         trackerCells(nextEvents: ArraySlice<TrackEvent>())
     }
