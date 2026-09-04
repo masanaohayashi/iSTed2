@@ -15,12 +15,30 @@ private enum TrackerPalette {
 }
 
 struct TrackEditorView: View {
+    private enum InlineEditorKind: Equatable {
+        case numeric(EventColumn)
+        case note
+    }
+
+    private struct InlineEditor: Equatable {
+        let row: Int
+        let kind: InlineEditorKind
+
+        var column: EventColumn {
+            switch kind {
+            case .numeric(let column): return column
+            case .note: return .note
+            }
+        }
+    }
+
     @EnvironmentObject private var engine: PlaybackEngine
     let trackID: Int
     @State private var cursor = TrackCursor()
-    @State private var numericInput = NumericInput()
-    @State private var numericInputCursor: TrackCursor?
+    @State private var inlineEditor: InlineEditor?
+    @State private var inlineText = ""
     @FocusState private var isKeyboardFocused: Bool
+    @FocusState private var isInlineEditorFocused: Bool
     @State private var isTrackSettingsPresented = false
 
     private var track: Track? {
@@ -71,12 +89,12 @@ struct TrackEditorView: View {
         }
         .onAppear {
             engine.selectedTrackID = trackID
-            resetNumericInput()
+            resetInlineEditor()
             normalizeCursor()
             isKeyboardFocused = true
         }
         .onChange(of: trackID) { _, _ in
-            resetNumericInput()
+            resetInlineEditor()
             normalizeCursor()
             isKeyboardFocused = true
         }
@@ -117,15 +135,26 @@ struct TrackEditorView: View {
         .focused($isKeyboardFocused)
         .focusEffectDisabled()
         .onKeyPress(keys: [.upArrow, .downArrow, .leftArrow, .rightArrow], phases: [.down, .repeat]) { press in
-            moveCursor(for: press.key, rowCount: rows.count)
+            guard inlineEditor == nil else { return .ignored }
+            return moveCursor(for: press.key, rowCount: rows.count)
         }
         .onKeyPress(.return, phases: .down) { _ in
+            guard inlineEditor == nil else { return .ignored }
             insertNoteBeforeCursor()
             return .handled
         }
         .onKeyPress(phases: .down) { press in
-            guard let digit = keyboardDigit(from: press) else { return .ignored }
-            return applyKeyboardDigit(digit) ? .handled : .ignored
+            guard inlineEditor == nil else { return .ignored }
+            if let digit = keyboardDigit(from: press) {
+                return beginNumericEdit(String(digit)) ? .handled : .ignored
+            }
+            if let note = keyboardNoteCharacter(from: press) {
+                return beginNoteEdit(note) ? .handled : .ignored
+            }
+            if press.characters == "-" {
+                return beginNumericEdit("-") ? .handled : .ignored
+            }
+            return .ignored
         }
     }
 
@@ -191,7 +220,7 @@ struct TrackEditorView: View {
         Text(title)
             .foregroundStyle(cursor.column == column ? TrackerPalette.cell : Color.white.opacity(0.9))
             .onTapGesture {
-                resetNumericInput()
+                resetInlineEditor()
                 cursor.column = column
                 isKeyboardFocused = true
             }
@@ -247,12 +276,13 @@ struct TrackEditorView: View {
         }
         .contentShape(Rectangle())
         .onTapGesture {
-            resetNumericInput()
+            resetInlineEditor()
             cursor.row = index
             isKeyboardFocused = true
         }
     }
 
+    @ViewBuilder
     private func cell(
         _ text: String,
         column: EventColumn,
@@ -260,16 +290,65 @@ struct TrackEditorView: View {
         alignment: Alignment
     ) -> some View {
         let active = cursor.row == index && cursor.column == column
-        return Text(text)
-            .frame(maxWidth: .infinity, alignment: alignment)
-            .padding(.horizontal, 2)
-            .background(active ? TrackerPalette.cell : Color.clear)
-            .foregroundStyle(active ? TrackerPalette.crt : TrackerPalette.phosphor)
-            .onTapGesture {
-                resetNumericInput()
-                cursor = TrackCursor(row: index, column: column)
-                isKeyboardFocused = true
-            }
+        if let inlineEditor,
+           inlineEditor.row == index,
+           inlineEditor.column == column {
+            inlineEditorField(kind: inlineEditor.kind, alignment: column == .note ? .leading : .trailing)
+                .frame(maxWidth: .infinity, alignment: alignment)
+        } else {
+            Text(text)
+                .frame(maxWidth: .infinity, alignment: alignment)
+                .padding(.horizontal, 2)
+                .background(active ? TrackerPalette.cell : Color.clear)
+                .foregroundStyle(active ? TrackerPalette.crt : TrackerPalette.phosphor)
+                .onTapGesture {
+                    resetInlineEditor()
+                    cursor = TrackCursor(row: index, column: column)
+                    isKeyboardFocused = true
+                }
+        }
+    }
+
+    private func inlineEditorField(
+        kind: InlineEditorKind,
+        alignment: TextAlignment
+    ) -> some View {
+        TextField(
+            "",
+            text: Binding(
+                get: { inlineText },
+                set: { inlineText = normalizedInlineText($0, kind: kind) }
+            )
+        )
+        .font(.system(size: 13, weight: .medium, design: .monospaced))
+        .textFieldStyle(.plain)
+        .multilineTextAlignment(alignment)
+        .foregroundStyle(TrackerPalette.crt)
+        .tint(.white)
+        .frame(width: 38, height: 22)
+        .padding(.horizontal, 2)
+        .background(TrackerPalette.cell)
+        .focused($isInlineEditorFocused)
+        .autocorrectionDisabled()
+        .onAppear {
+            isInlineEditorFocused = true
+        }
+        .onSubmit {
+            commitInlineEditor()
+        }
+        .onKeyPress(.escape, phases: .down) { _ in
+            cancelInlineEditor()
+            return .handled
+        }
+    }
+
+    private func normalizedInlineText(_ text: String, kind: InlineEditorKind) -> String {
+        switch kind {
+        case .numeric:
+            return TrackerTextInput.normalizedNumeric(text)
+        case .note:
+            return TrackerTextInput.normalizedNote(text)
+        }
     }
 
     private var inputDeck: some View {
@@ -317,7 +396,7 @@ struct TrackEditorView: View {
     }
 
     private func apply(_ input: TrackEditInput) {
-        resetNumericInput()
+        resetInlineEditor()
         guard let track else { return }
         let index = cursor.row
         guard track.events.indices.contains(index), index < track.terminatorIndex else { return }
@@ -331,7 +410,7 @@ struct TrackEditorView: View {
 
     private func insertEvent() {
         guard let track else { return }
-        resetNumericInput()
+        resetInlineEditor()
         let index = min(cursor.row + 1, track.terminatorIndex)
         engine.insertEvent(trackID: trackID, at: index)
         cursor = TrackCursor(row: index, column: .note)
@@ -340,7 +419,7 @@ struct TrackEditorView: View {
 
     private func deleteEvent() {
         guard let track, cursor.row < track.terminatorIndex else { return }
-        resetNumericInput()
+        resetInlineEditor()
         let index = cursor.row
         engine.deleteEvent(trackID: trackID, at: index)
         let newTerminatorIndex = max(0, track.terminatorIndex - 1)
@@ -359,7 +438,7 @@ struct TrackEditorView: View {
         }
 
         guard let direction else { return .ignored }
-        resetNumericInput()
+        resetInlineEditor()
         cursor.move(direction, rowCount: rowCount)
         isKeyboardFocused = true
         return .handled
@@ -367,7 +446,7 @@ struct TrackEditorView: View {
 
     private func insertNoteBeforeCursor() {
         guard let track else { return }
-        resetNumericInput()
+        resetInlineEditor()
         let index = min(max(0, cursor.row), track.terminatorIndex)
         engine.insertNoteBefore(trackID: trackID, at: index)
         cursor = TrackCursor(row: index, column: .note)
@@ -387,31 +466,89 @@ struct TrackEditorView: View {
         )
     }
 
-    private func applyKeyboardDigit(_ digit: Int) -> Bool {
+    private func beginNumericEdit(_ initialText: String) -> Bool {
         guard let track else { return false }
         let index = cursor.row
         guard track.events.indices.contains(index),
               index < track.terminatorIndex,
               track.events[index].command < 0x80
-        else {
-            resetNumericInput()
-            return false
-        }
+        else { return false }
 
-        if numericInputCursor != cursor {
-            numericInput.reset()
-            numericInputCursor = cursor
-        }
-        let value = numericInput.enter(digit, range: cursor.column.numericRange)
-        let event = track.events[index].settingNumericValue(value, in: cursor.column)
-        engine.updateEvent(trackID: trackID, index: index, event)
-        isKeyboardFocused = true
+        inlineText = TrackerTextInput.normalizedNumeric(initialText)
+        inlineEditor = InlineEditor(row: index, kind: .numeric(cursor.column))
+        isKeyboardFocused = false
+        isInlineEditorFocused = true
         return true
     }
 
-    private func resetNumericInput() {
-        numericInput.reset()
-        numericInputCursor = nil
+    private func beginNoteEdit(_ initialCharacter: Character) -> Bool {
+        guard let track else { return false }
+        let index = cursor.row
+        guard track.events.indices.contains(index),
+              index < track.terminatorIndex,
+              track.events[index].command < 0x80
+        else { return false }
+
+        cursor.column = .note
+        inlineText = TrackerTextInput.normalizedNote(String(initialCharacter))
+        inlineEditor = InlineEditor(row: index, kind: .note)
+        isKeyboardFocused = false
+        isInlineEditorFocused = true
+        return true
+    }
+
+    private func commitInlineEditor() {
+        guard let inlineEditor,
+              let track,
+              track.events.indices.contains(inlineEditor.row),
+              inlineEditor.row < track.terminatorIndex,
+              track.events[inlineEditor.row].command < 0x80
+        else {
+            cancelInlineEditor()
+            return
+        }
+
+        let event = track.events[inlineEditor.row]
+        let value: Int?
+        switch inlineEditor.kind {
+        case .numeric(let column):
+            value = TrackerTextInput.numericValue(inlineText, in: column)
+        case .note:
+            value = TrackerTextInput.noteNumber(
+                inlineText,
+                referenceNote: Int(event.command)
+            )
+        }
+
+        guard let value else { return }
+        let column = inlineEditor.column
+        engine.updateEvent(
+            trackID: trackID,
+            index: inlineEditor.row,
+            event.settingNumericValue(value, in: column)
+        )
+        resetInlineEditor()
+        isKeyboardFocused = true
+    }
+
+    private func cancelInlineEditor() {
+        resetInlineEditor()
+        isKeyboardFocused = true
+    }
+
+    private func resetInlineEditor() {
+        inlineEditor = nil
+        inlineText = ""
+        isInlineEditorFocused = false
+    }
+
+    private func keyboardNoteCharacter(from press: KeyPress) -> Character? {
+        let characters = Array(press.characters.uppercased())
+        guard characters.count == 1,
+              let character = characters.first,
+              "ABCDEFG".contains(character)
+        else { return nil }
+        return character
     }
 
     private func keyboardDigit(from press: KeyPress) -> Int? {

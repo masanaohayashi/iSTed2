@@ -31,6 +31,23 @@ final class TrackEditInputTests: XCTestCase {
         XCTAssertEqual(original.settingNumericValue(127, in: .note).command, 127)
     }
 
+    func testNumericTextInputKeepsFourCharactersAndClipsOnCommit() {
+        XCTAssertEqual(TrackerTextInput.normalizedNumeric("-12345"), "-123")
+        XCTAssertEqual(TrackerTextInput.numericValue("9999", in: .gt), 255)
+        XCTAssertEqual(TrackerTextInput.numericValue("-12", in: .vel), 0)
+        XCTAssertEqual(TrackerTextInput.numericValue("-", in: .st), 0)
+        XCTAssertEqual(TrackerTextInput.numericValue("", in: .st), 0)
+    }
+
+    func testNoteTextInputUsesTheOriginalCtcNoteSyntax() {
+        XCTAssertEqual(TrackerTextInput.noteNumber("C4"), 60)
+        XCTAssertEqual(TrackerTextInput.noteNumber("C#4"), 61)
+        XCTAssertEqual(TrackerTextInput.noteNumber("Bb3"), 58)
+        XCTAssertEqual(TrackerTextInput.noteNumber("C."), 0)
+        XCTAssertEqual(TrackerTextInput.noteNumber("60"), 60)
+        XCTAssertNil(TrackerTextInput.noteNumber("B9"))
+    }
+
     func testLowDigitPadMapsFlickDirections() {
         XCTAssertEqual(FlickPad.digitsLow.value(for: .tap), .digit(0))
         XCTAssertEqual(FlickPad.digitsLow.value(for: .left), .digit(1))

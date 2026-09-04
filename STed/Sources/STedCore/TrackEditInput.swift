@@ -38,6 +38,95 @@ public struct NumericInput: Equatable, Sendable {
     }
 }
 
+/// Text entry rules shared by the track editor's keyboard input fields.
+///
+/// STed2's `sinput` limits the visible edit buffer to four characters. The
+/// original numeric fields accept a signed decimal value, while note entry is
+/// parsed by `ctc` using the current note as the octave fallback.
+public enum TrackerTextInput {
+    public static let maximumLength = 4
+
+    public static func normalizedNumeric(_ text: String) -> String {
+        var result = ""
+        for character in text {
+            if result.isEmpty, character == "-" {
+                result.append(character)
+            } else if let digit = character.wholeNumberValue, (0...9).contains(digit) {
+                result.append(Character(String(digit)))
+            }
+
+            if result.count == maximumLength {
+                break
+            }
+        }
+        return result
+    }
+
+    public static func numericValue(
+        _ text: String,
+        in column: EventColumn
+    ) -> Int? {
+        let normalized = normalizedNumeric(text)
+        guard !normalized.isEmpty, normalized != "-" else { return 0 }
+        guard let value = Int(normalized) else { return nil }
+        let range = column.numericRange
+        return min(range.upperBound, max(range.lowerBound, value))
+    }
+
+    public static func normalizedNote(_ text: String) -> String {
+        let printable = text.uppercased().unicodeScalars.filter {
+            (32...126).contains($0.value)
+        }
+        return String(String.UnicodeScalarView(printable).prefix(maximumLength))
+    }
+
+    /// Parses the note-name syntax used by STed2's `ctc` function.
+    ///
+    /// `C4` is MIDI note 60. `#` and `+` raise a note, `-` or a following `B`
+    /// lower it, and `.` denotes the octave below 0. A note without an octave
+    /// uses the octave of `referenceNote`; decimal input is also accepted just
+    /// as it is by `ctc`.
+    public static func noteNumber(_ text: String, referenceNote: Int = 60) -> Int? {
+        let normalized = normalizedNote(text)
+        guard !normalized.isEmpty else { return nil }
+
+        let characters = Array(normalized)
+        guard let first = characters.first else { return nil }
+        let pitchClasses: [Character: Int] = [
+            "C": 0, "D": 2, "E": 4, "F": 5, "G": 7, "A": 9, "B": 11
+        ]
+
+        guard var pitchClass = pitchClasses[first] else {
+            guard let value = Int(normalized) else { return nil }
+            return (0...127).contains(value) ? value : nil
+        }
+
+        var octave = referenceNote / 12 - 1
+        var index = 1
+        if index < characters.count, characters[index] == "B" {
+            pitchClass -= 1
+            index += 1
+        }
+
+        while index < characters.count {
+            switch characters[index] {
+            case "#", "+": pitchClass += 1
+            case "-": pitchClass -= 1
+            case ".": octave = -1
+            case "<": octave += 1
+            case ">": octave -= 1
+            case let digit where digit.wholeNumberValue != nil:
+                octave = digit.wholeNumberValue ?? octave
+            default: break
+            }
+            index += 1
+        }
+
+        let value = (octave + 1) * 12 + pitchClass
+        return (0...127).contains(value) ? value : nil
+    }
+}
+
 public enum TrackEditInput: Equatable, Sendable {
     case digit(Int)
     case pitchClass(Int)
