@@ -127,6 +127,99 @@ public enum TrackerTextInput {
     }
 }
 
+public enum TrackerTextInputMode: Equatable, Sendable {
+    case numeric
+    case note
+}
+
+/// The editable buffer and cursor used by an inline tracker cell.
+///
+/// This deliberately keeps the insertion point separate from the text. The
+/// original STed2 `sinput` routine starts with `p = strlen(st)` when editing
+/// an existing value, so the character that opened the editor is retained and
+/// the next key is inserted after it rather than replacing it.
+public struct TrackerTextInputSession: Equatable, Sendable {
+    public let mode: TrackerTextInputMode
+    public private(set) var text: String
+    public private(set) var caretPosition: Int
+
+    public init(mode: TrackerTextInputMode, initialText: String = "") {
+        self.mode = mode
+        switch mode {
+        case .numeric:
+            self.text = TrackerTextInput.normalizedNumeric(initialText)
+        case .note:
+            self.text = TrackerTextInput.normalizedNote(initialText)
+        }
+        caretPosition = self.text.count
+    }
+
+    public mutating func insert(_ input: String) {
+        for character in input {
+            insert(character)
+        }
+    }
+
+    public mutating func insert(_ character: Character) {
+        guard let character = normalizedCharacter(character) else { return }
+        guard text.count < TrackerTextInput.maximumLength else { return }
+
+        var characters = Array(text)
+        characters.insert(character, at: caretPosition)
+        text = String(characters)
+        caretPosition += 1
+    }
+
+    public mutating func moveLeft() {
+        caretPosition = max(0, caretPosition - 1)
+    }
+
+    public mutating func moveRight() {
+        caretPosition = min(text.count, caretPosition + 1)
+    }
+
+    public mutating func moveToBeginning() {
+        caretPosition = 0
+    }
+
+    public mutating func moveToEnd() {
+        caretPosition = text.count
+    }
+
+    public mutating func backspace() {
+        guard caretPosition > 0 else { return }
+        var characters = Array(text)
+        characters.remove(at: caretPosition - 1)
+        text = String(characters)
+        caretPosition -= 1
+    }
+
+    public mutating func delete() {
+        guard caretPosition < text.count else { return }
+        var characters = Array(text)
+        characters.remove(at: caretPosition)
+        text = String(characters)
+    }
+
+    private func normalizedCharacter(_ character: Character) -> Character? {
+        switch mode {
+        case .numeric:
+            if character == "-" {
+                guard caretPosition == 0, !text.contains("-") else { return nil }
+                return character
+            }
+            guard let digit = character.wholeNumberValue,
+                  (0...9).contains(digit)
+            else { return nil }
+            return Character(String(digit))
+        case .note:
+            let normalized = TrackerTextInput.normalizedNote(String(character))
+            guard normalized.count == 1 else { return nil }
+            return normalized.first
+        }
+    }
+}
+
 public enum TrackEditInput: Equatable, Sendable {
     case digit(Int)
     case pitchClass(Int)

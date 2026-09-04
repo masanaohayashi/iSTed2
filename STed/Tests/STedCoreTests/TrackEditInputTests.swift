@@ -39,6 +39,27 @@ final class TrackEditInputTests: XCTestCase {
         XCTAssertEqual(TrackerTextInput.numericValue("", in: .st), 0)
     }
 
+    func testInlineNoteInputPutsTheCaretAfterTheStarterCharacter() {
+        var input = TrackerTextInputSession(mode: .note, initialText: "D")
+
+        XCTAssertEqual(input.text, "D")
+        XCTAssertEqual(input.caretPosition, 1)
+
+        input.insert("3")
+
+        XCTAssertEqual(input.text, "D3")
+        XCTAssertEqual(input.caretPosition, 2)
+    }
+
+    func testInlineNumericInputAppendsAfterStarterAndStopsAtFourCharacters() {
+        var input = TrackerTextInputSession(mode: .numeric, initialText: "5")
+
+        input.insert("1234")
+
+        XCTAssertEqual(input.text, "5123")
+        XCTAssertEqual(input.caretPosition, 4)
+    }
+
     func testNoteTextInputUsesTheOriginalCtcNoteSyntax() {
         XCTAssertEqual(TrackerTextInput.noteNumber("C4"), 60)
         XCTAssertEqual(TrackerTextInput.noteNumber("C#4"), 61)

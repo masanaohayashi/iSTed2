@@ -38,7 +38,6 @@ struct TrackEditorView: View {
     @State private var inlineEditor: InlineEditor?
     @State private var inlineText = ""
     @FocusState private var isKeyboardFocused: Bool
-    @FocusState private var isInlineEditorFocused: Bool
     @State private var isTrackSettingsPresented = false
 
     private var track: Track? {
@@ -293,7 +292,7 @@ struct TrackEditorView: View {
         if let inlineEditor,
            inlineEditor.row == index,
            inlineEditor.column == column {
-            inlineEditorField(kind: inlineEditor.kind, alignment: column == .note ? .leading : .trailing)
+            inlineEditorField(kind: inlineEditor.kind, isTrailing: column != .note)
                 .frame(maxWidth: .infinity, alignment: alignment)
         } else {
             Text(text)
@@ -311,43 +310,30 @@ struct TrackEditorView: View {
 
     private func inlineEditorField(
         kind: InlineEditorKind,
-        alignment: TextAlignment
+        isTrailing: Bool
     ) -> some View {
-        TextField(
-            "",
-            text: Binding(
-                get: { inlineText },
-                set: { inlineText = normalizedInlineText($0, kind: kind) }
-            )
+        TrackerInlineEditorField(
+            mode: inlineEditorMode(for: kind),
+            initialText: inlineText,
+            isTrailing: isTrailing,
+            onTextChange: { text in
+                inlineText = text
+            },
+            onCommit: { text in
+                commitInlineEditor(text: text)
+            },
+            onCancel: {
+                cancelInlineEditor()
+            }
         )
-        .font(.system(size: 13, weight: .medium, design: .monospaced))
-        .textFieldStyle(.plain)
-        .multilineTextAlignment(alignment)
-        .foregroundStyle(TrackerPalette.crt)
-        .tint(.white)
-        .frame(width: 38, height: 22)
-        .padding(.horizontal, 2)
-        .background(TrackerPalette.cell)
-        .focused($isInlineEditorFocused)
-        .autocorrectionDisabled()
-        .onAppear {
-            isInlineEditorFocused = true
-        }
-        .onSubmit {
-            commitInlineEditor()
-        }
-        .onKeyPress(.escape, phases: .down) { _ in
-            cancelInlineEditor()
-            return .handled
-        }
     }
 
-    private func normalizedInlineText(_ text: String, kind: InlineEditorKind) -> String {
+    private func inlineEditorMode(for kind: InlineEditorKind) -> TrackerTextInputMode {
         switch kind {
         case .numeric:
-            return TrackerTextInput.normalizedNumeric(text)
+            return .numeric
         case .note:
-            return TrackerTextInput.normalizedNote(text)
+            return .note
         }
     }
 
@@ -477,7 +463,6 @@ struct TrackEditorView: View {
         inlineText = TrackerTextInput.normalizedNumeric(initialText)
         inlineEditor = InlineEditor(row: index, kind: .numeric(cursor.column))
         isKeyboardFocused = false
-        isInlineEditorFocused = true
         return true
     }
 
@@ -493,11 +478,10 @@ struct TrackEditorView: View {
         inlineText = TrackerTextInput.normalizedNote(String(initialCharacter))
         inlineEditor = InlineEditor(row: index, kind: .note)
         isKeyboardFocused = false
-        isInlineEditorFocused = true
         return true
     }
 
-    private func commitInlineEditor() {
+    private func commitInlineEditor(text draftText: String? = nil) {
         guard let inlineEditor,
               let track,
               track.events.indices.contains(inlineEditor.row),
@@ -509,24 +493,26 @@ struct TrackEditorView: View {
         }
 
         let event = track.events[inlineEditor.row]
+        let draftText = draftText ?? inlineText
         let value: Int?
         switch inlineEditor.kind {
         case .numeric(let column):
-            value = TrackerTextInput.numericValue(inlineText, in: column)
+            value = TrackerTextInput.numericValue(draftText, in: column)
         case .note:
             value = TrackerTextInput.noteNumber(
-                inlineText,
+                draftText,
                 referenceNote: Int(event.command)
             )
         }
 
-        guard let value else { return }
-        let column = inlineEditor.column
-        engine.updateEvent(
-            trackID: trackID,
-            index: inlineEditor.row,
-            event.settingNumericValue(value, in: column)
-        )
+        if let value {
+            let column = inlineEditor.column
+            engine.updateEvent(
+                trackID: trackID,
+                index: inlineEditor.row,
+                event.settingNumericValue(value, in: column)
+            )
+        }
         resetInlineEditor()
         isKeyboardFocused = true
     }
@@ -539,7 +525,6 @@ struct TrackEditorView: View {
     private func resetInlineEditor() {
         inlineEditor = nil
         inlineText = ""
-        isInlineEditorFocused = false
     }
 
     private func keyboardNoteCharacter(from press: KeyPress) -> Character? {
@@ -576,6 +561,132 @@ struct TrackEditorView: View {
     private func channelText(_ track: Track) -> String {
         guard let channel = track.midiChannel else { return "OFF" }
         return "A \(channel)"
+    }
+}
+
+private struct TrackerInlineEditorField: View {
+    private static let characterWidth: CGFloat = 8
+    private static let bufferWidth = CGFloat(TrackerTextInput.maximumLength) * characterWidth
+
+    let mode: TrackerTextInputMode
+    let isTrailing: Bool
+    let onTextChange: (String) -> Void
+    let onCommit: (String) -> Void
+    let onCancel: () -> Void
+
+    @State private var input: TrackerTextInputSession
+    @FocusState private var isFocused: Bool
+
+    init(
+        mode: TrackerTextInputMode,
+        initialText: String,
+        isTrailing: Bool,
+        onTextChange: @escaping (String) -> Void,
+        onCommit: @escaping (String) -> Void,
+        onCancel: @escaping () -> Void
+    ) {
+        self.mode = mode
+        self.isTrailing = isTrailing
+        self.onTextChange = onTextChange
+        self.onCommit = onCommit
+        self.onCancel = onCancel
+        _input = State(
+            initialValue: TrackerTextInputSession(mode: mode, initialText: initialText)
+        )
+    }
+
+    var body: some View {
+        TimelineView(.periodic(from: .now, by: 0.5)) { timeline in
+            let caretVisible = Int(timeline.date.timeIntervalSinceReferenceDate / 0.5)
+                .isMultiple(of: 2)
+
+            ZStack(alignment: .leading) {
+                HStack(spacing: 0) {
+                    if isTrailing {
+                        Spacer(minLength: leadingEmptyWidth)
+                    }
+
+                    ForEach(Array(input.text.enumerated()), id: \.offset) { _, character in
+                        Text(String(character))
+                            .frame(
+                                width: Self.characterWidth,
+                                height: 22,
+                                alignment: .leading
+                            )
+                    }
+
+                    if !isTrailing {
+                        Spacer(minLength: 0)
+                    }
+                }
+                .frame(width: Self.bufferWidth, alignment: .leading)
+
+                Rectangle()
+                    .fill(Color.white)
+                    .frame(width: 1, height: 18)
+                    .opacity(caretVisible ? 1 : 0)
+                    .offset(x: caretOffset)
+            }
+            .font(.system(size: 13, weight: .medium, design: .monospaced))
+            .foregroundStyle(TrackerPalette.crt)
+            .frame(width: Self.bufferWidth, height: 22, alignment: .leading)
+        }
+        .frame(width: Self.bufferWidth, height: 22)
+        .padding(.horizontal, 2)
+        .background(TrackerPalette.cell)
+        .focusable()
+        .focused($isFocused)
+        .focusEffectDisabled()
+        .onAppear {
+            isFocused = true
+        }
+        .onKeyPress(.return, phases: .down) { _ in
+            onCommit(input.text)
+            return .handled
+        }
+        .onKeyPress(.escape, phases: .down) { _ in
+            onCancel()
+            return .handled
+        }
+        .onKeyPress(keys: [.leftArrow, .rightArrow], phases: [.down, .repeat]) { press in
+            switch press.key {
+            case .leftArrow:
+                input.moveLeft()
+            case .rightArrow:
+                input.moveRight()
+            default:
+                return .ignored
+            }
+            onTextChange(input.text)
+            return .handled
+        }
+        .onKeyPress(phases: .down) { press in
+            if press.key == .delete || press.characters == "\u{7f}" {
+                input.delete()
+                onTextChange(input.text)
+                return .handled
+            }
+            if press.characters == "\u{8}" {
+                input.backspace()
+                onTextChange(input.text)
+                return .handled
+            }
+            guard !press.characters.isEmpty else { return .ignored }
+            input.insert(press.characters)
+            onTextChange(input.text)
+            return .handled
+        }
+    }
+
+    private var leadingEmptyWidth: CGFloat {
+        CGFloat(max(0, TrackerTextInput.maximumLength - input.text.count)) * Self.characterWidth
+    }
+
+    private var caretOffset: CGFloat {
+        let leadingEmptySlots = isTrailing
+            ? max(0, TrackerTextInput.maximumLength - input.text.count)
+            : 0
+        return CGFloat(leadingEmptySlots + input.caretPosition) * Self.characterWidth
     }
 }
 
