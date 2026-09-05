@@ -133,8 +133,8 @@ public enum TrackerTextInputMode: Equatable, Sendable {
 }
 
 public enum TrackerTextInputCommand: Equatable, Sendable {
-    case backspace
-    case delete
+    case deleteBackward
+    case deleteForward
     case clear
     case moveToBeginning
     case moveToEnd
@@ -180,9 +180,9 @@ public struct TrackerTextInputSession: Equatable, Sendable {
 
     public mutating func apply(_ command: TrackerTextInputCommand) {
         switch command {
-        case .backspace:
+        case .deleteBackward:
             backspace()
-        case .delete:
+        case .deleteForward:
             delete()
         case .clear:
             clear()

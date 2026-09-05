@@ -85,14 +85,14 @@ final class TrackEditInputTests: XCTestCase {
         XCTAssertEqual(input.caretPosition, 0)
     }
 
-    func testInlineNumericInputCommandsHandleBothDeleteDirections() {
+    func testInlineNumericInputCommandsKeepMacDeleteBackward() {
         var input = TrackerTextInputSession(mode: .numeric, initialText: "123")
 
-        input.apply(.backspace)
+        input.apply(.deleteBackward)
         XCTAssertEqual(input.text, "12")
 
         input.apply(.moveToBeginning)
-        input.apply(.delete)
+        input.apply(.deleteForward)
         XCTAssertEqual(input.text, "2")
 
         input.apply(.clear)

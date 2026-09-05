@@ -825,14 +825,12 @@ private struct TrackerInlineEditorField: View {
                 input.apply(.clear)
                 onTextChange(input.text)
                 return .handled
-            case .delete:
+            case .delete, .deleteForward:
                 hasDismissedPreview = true
-                input.apply(.backspace)
-                onTextChange(input.text)
-                return .handled
-            case .deleteForward:
-                hasDismissedPreview = true
-                input.apply(.delete)
+                // macOS's Delete key is a backward delete. SwiftUI can
+                // expose it as either delete equivalent depending on the
+                // keyboard, so both key forms follow the Mac behavior.
+                input.apply(.deleteBackward)
                 onTextChange(input.text)
                 return .handled
             default:
@@ -845,13 +843,13 @@ private struct TrackerInlineEditorField: View {
             }
             if press.characters == "\u{8}" {
                 hasDismissedPreview = true
-                input.apply(.backspace)
+                input.apply(.deleteBackward)
                 onTextChange(input.text)
                 return .handled
             }
             if press.characters == "\u{7f}" {
                 hasDismissedPreview = true
-                input.apply(.delete)
+                input.apply(.deleteBackward)
                 onTextChange(input.text)
                 return .handled
             }
