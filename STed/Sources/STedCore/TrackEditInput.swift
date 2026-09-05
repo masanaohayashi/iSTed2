@@ -145,13 +145,20 @@ public enum TrackerTextInputCommand: Equatable, Sendable {
 /// This deliberately keeps the insertion point separate from the text. The
 /// original STed2 `sinput` routine starts with `p = strlen(st)` when editing
 /// an existing value, so the character that opened the editor is retained and
-/// the next key is inserted after it rather than replacing it.
+/// the next key is inserted after it rather than replacing it. macOS column
+/// navigation additionally uses `isAllSelected` to replace the destination
+/// value with the next valid character.
 public struct TrackerTextInputSession: Equatable, Sendable {
     public let mode: TrackerTextInputMode
     public private(set) var text: String
     public private(set) var caretPosition: Int
+    public private(set) var isAllSelected: Bool
 
-    public init(mode: TrackerTextInputMode, initialText: String = "") {
+    public init(
+        mode: TrackerTextInputMode,
+        initialText: String = "",
+        selectAll: Bool = false
+    ) {
         self.mode = mode
         switch mode {
         case .numeric:
@@ -160,6 +167,7 @@ public struct TrackerTextInputSession: Equatable, Sendable {
             self.text = TrackerTextInput.normalizedNote(initialText)
         }
         caretPosition = self.text.count
+        isAllSelected = selectAll && !self.text.isEmpty
     }
 
     public mutating func insert(_ input: String) {
@@ -170,6 +178,13 @@ public struct TrackerTextInputSession: Equatable, Sendable {
 
     public mutating func insert(_ character: Character) {
         guard let character = normalizedCharacter(character) else { return }
+
+        if isAllSelected {
+            text = ""
+            caretPosition = 0
+            isAllSelected = false
+        }
+
         guard text.count < TrackerTextInput.maximumLength else { return }
 
         var characters = Array(text)
@@ -194,22 +209,30 @@ public struct TrackerTextInputSession: Equatable, Sendable {
     }
 
     public mutating func moveLeft() {
+        isAllSelected = false
         caretPosition = max(0, caretPosition - 1)
     }
 
     public mutating func moveRight() {
+        isAllSelected = false
         caretPosition = min(text.count, caretPosition + 1)
     }
 
     public mutating func moveToBeginning() {
+        isAllSelected = false
         caretPosition = 0
     }
 
     public mutating func moveToEnd() {
+        isAllSelected = false
         caretPosition = text.count
     }
 
     public mutating func backspace() {
+        if isAllSelected {
+            clear()
+            return
+        }
         guard caretPosition > 0 else { return }
         var characters = Array(text)
         characters.remove(at: caretPosition - 1)
@@ -218,6 +241,10 @@ public struct TrackerTextInputSession: Equatable, Sendable {
     }
 
     public mutating func delete() {
+        if isAllSelected {
+            clear()
+            return
+        }
         guard caretPosition < text.count else { return }
         var characters = Array(text)
         characters.remove(at: caretPosition)
@@ -227,13 +254,18 @@ public struct TrackerTextInputSession: Equatable, Sendable {
     public mutating func clear() {
         text = ""
         caretPosition = 0
+        isAllSelected = false
     }
 
     private func normalizedCharacter(_ character: Character) -> Character? {
         switch mode {
         case .numeric:
             if character == "-" {
-                guard caretPosition == 0, !text.contains("-") else { return nil }
+                let validationText = isAllSelected ? "" : text
+                let validationCaret = isAllSelected ? 0 : caretPosition
+                guard validationCaret == 0, !validationText.contains("-") else {
+                    return nil
+                }
                 return character
             }
             guard let digit = character.wholeNumberValue,

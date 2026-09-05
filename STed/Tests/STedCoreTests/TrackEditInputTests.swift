@@ -100,6 +100,36 @@ final class TrackEditInputTests: XCTestCase {
         XCTAssertEqual(input.caretPosition, 0)
     }
 
+    func testInlineInputSelectsExistingValueForReplacement() {
+        var numeric = TrackerTextInputSession(
+            mode: .numeric,
+            initialText: "48",
+            selectAll: true
+        )
+
+        XCTAssertTrue(numeric.isAllSelected)
+        numeric.insert("2")
+        XCTAssertEqual(numeric.text, "2")
+        XCTAssertEqual(numeric.caretPosition, 1)
+        XCTAssertFalse(numeric.isAllSelected)
+
+        var signed = TrackerTextInputSession(
+            mode: .numeric,
+            initialText: "48",
+            selectAll: true
+        )
+        signed.insert("-")
+        XCTAssertEqual(signed.text, "-")
+
+        var note = TrackerTextInputSession(
+            mode: .note,
+            initialText: "C4",
+            selectAll: true
+        )
+        note.insert("D")
+        XCTAssertEqual(note.text, "D")
+    }
+
     func testNoteTextInputUsesTheOriginalCtcNoteSyntax() {
         XCTAssertEqual(TrackerTextInput.noteNumber("C4"), 60)
         XCTAssertEqual(TrackerTextInput.noteNumber("C#4"), 61)

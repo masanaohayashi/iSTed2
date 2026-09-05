@@ -35,6 +35,7 @@ struct TrackEditorView: View {
         let row: Int
         let kind: InlineEditorKind
         let origin: InlineEditorOrigin
+        let selectsText: Bool
         let copiedNotePreview: String?
 
         var column: EventColumn {
@@ -153,7 +154,11 @@ struct TrackEditorView: View {
             if inlineEditor != nil {
                 // `retkey(13)` in EDIT.C advances to the next row after
                 // committing the active field.
-                return handleCursorKey(for: .downArrow, rowCount: rows.count)
+                return handleCursorKey(
+                    for: .downArrow,
+                    rowCount: rows.count,
+                    selectDestination: false
+                )
             } else {
                 insertNoteBeforeCursor()
             }
@@ -316,6 +321,7 @@ struct TrackEditorView: View {
            inlineEditor.column == column {
             inlineEditorField(
                 kind: inlineEditor.kind,
+                selectAll: inlineEditor.selectsText,
                 copiedNotePreview: inlineEditor.copiedNotePreview,
                 isTrailing: column != .note
             )
@@ -336,12 +342,14 @@ struct TrackEditorView: View {
 
     private func inlineEditorField(
         kind: InlineEditorKind,
+        selectAll: Bool,
         copiedNotePreview: String?,
         isTrailing: Bool
     ) -> some View {
         TrackerInlineEditorField(
             mode: inlineEditorMode(for: kind),
             initialText: inlineText,
+            selectAll: selectAll,
             copiedNotePreview: copiedNotePreview,
             isTrailing: isTrailing,
             onTextChange: { text in
@@ -438,7 +446,11 @@ struct TrackEditorView: View {
         isKeyboardFocused = true
     }
 
-    private func handleCursorKey(for key: KeyEquivalent, rowCount: Int) -> KeyPress.Result {
+    private func handleCursorKey(
+        for key: KeyEquivalent,
+        rowCount: Int,
+        selectDestination: Bool = true
+    ) -> KeyPress.Result {
         let direction: TrackCursorDirection?
         switch key {
         case .upArrow: direction = .up
@@ -452,18 +464,23 @@ struct TrackEditorView: View {
         if let inlineEditor, inlineEditor.origin == .insertedNote {
             return handleInsertedEditorNavigation(
                 direction: direction,
-                rowCount: rowCount
+                rowCount: rowCount,
+                selectDestination: selectDestination
             )
         }
         finishInlineEditorBeforeNavigation()
         cursor.move(direction, rowCount: rowCount)
+        if selectDestination && beginEditorAtCursor(selectAll: true) {
+            return .handled
+        }
         isKeyboardFocused = true
         return .handled
     }
 
     private func handleInsertedEditorNavigation(
         direction: TrackCursorDirection,
-        rowCount: Int
+        rowCount: Int,
+        selectDestination: Bool
     ) -> KeyPress.Result {
         guard let editor = inlineEditor else { return .ignored }
 
@@ -471,15 +488,31 @@ struct TrackEditorView: View {
         case .right:
             switch editor.kind {
             case .note:
-                return beginInsertedNumericEditor(row: editor.row, column: .st)
+                return beginInsertedNumericEditor(
+                    row: editor.row,
+                    column: .st,
+                    selectAll: true
+                )
             case .numeric(let column):
                 switch column {
                 case .st:
-                    return beginInsertedNumericEditor(row: editor.row, column: .gt)
+                    return beginInsertedNumericEditor(
+                        row: editor.row,
+                        column: .gt,
+                        selectAll: true
+                    )
                 case .gt:
-                    return beginInsertedNumericEditor(row: editor.row, column: .vel)
+                    return beginInsertedNumericEditor(
+                        row: editor.row,
+                        column: .vel,
+                        selectAll: true
+                    )
                 case .vel:
-                    return finishInsertedEditorAndMove(.down, rowCount: rowCount)
+                    return finishInsertedEditorAndMove(
+                        .down,
+                        rowCount: rowCount,
+                        selectDestination: selectDestination
+                    )
                 case .note:
                     return .ignored
                 }
@@ -487,27 +520,44 @@ struct TrackEditorView: View {
         case .left:
             switch editor.kind {
             case .note:
-                return finishInsertedEditorAndMove(.left, rowCount: rowCount)
+                return finishInsertedEditorAndMove(
+                    .left,
+                    rowCount: rowCount,
+                    selectDestination: selectDestination
+                )
             case .numeric(let column):
                 switch column {
                 case .st:
-                    return beginInsertedNoteEditor(row: editor.row)
+                    return beginInsertedNoteEditor(row: editor.row, selectAll: true)
                 case .gt:
-                    return beginInsertedNumericEditor(row: editor.row, column: .st)
+                    return beginInsertedNumericEditor(
+                        row: editor.row,
+                        column: .st,
+                        selectAll: true
+                    )
                 case .vel:
-                    return beginInsertedNumericEditor(row: editor.row, column: .gt)
+                    return beginInsertedNumericEditor(
+                        row: editor.row,
+                        column: .gt,
+                        selectAll: true
+                    )
                 case .note:
                     return .ignored
                 }
             }
         case .up, .down:
-            return finishInsertedEditorAndMove(direction, rowCount: rowCount)
+            return finishInsertedEditorAndMove(
+                direction,
+                rowCount: rowCount,
+                selectDestination: selectDestination
+            )
         }
     }
 
     private func beginInsertedNumericEditor(
         row: Int,
-        column: EventColumn
+        column: EventColumn,
+        selectAll: Bool
     ) -> KeyPress.Result {
         guard let track,
               track.events.indices.contains(row),
@@ -521,14 +571,18 @@ struct TrackEditorView: View {
         commitInlineEditor()
         cursor = TrackCursor(row: row, column: column)
         let initialText = value == 0 ? "" : String(value)
-        if beginNumericEdit(initialText, origin: .insertedNote) {
+        if beginNumericEdit(
+            initialText,
+            origin: .insertedNote,
+            selectAll: selectAll
+        ) {
             return .handled
         }
         isKeyboardFocused = true
         return .handled
     }
 
-    private func beginInsertedNoteEditor(row: Int) -> KeyPress.Result {
+    private func beginInsertedNoteEditor(row: Int, selectAll: Bool) -> KeyPress.Result {
         guard let track, track.events.indices.contains(row) else {
             finishInlineEditorBeforeNavigation()
             isKeyboardFocused = true
@@ -538,7 +592,11 @@ struct TrackEditorView: View {
         let initialText = track.events[row].noteInputText
         commitInlineEditor()
         cursor = TrackCursor(row: row, column: .note)
-        if beginNoteEdit(initialText: initialText, origin: .insertedNote) {
+        if beginNoteEdit(
+            initialText: initialText,
+            origin: .insertedNote,
+            selectAll: selectAll
+        ) {
             return .handled
         }
         isKeyboardFocused = true
@@ -547,12 +605,16 @@ struct TrackEditorView: View {
 
     private func finishInsertedEditorAndMove(
         _ direction: TrackCursorDirection,
-        rowCount: Int
+        rowCount: Int,
+        selectDestination: Bool
     ) -> KeyPress.Result {
         guard let row = inlineEditor?.row else { return .ignored }
         commitInlineEditor()
         cursor = TrackCursor(row: row, column: .note)
         cursor.move(direction, rowCount: rowCount)
+        if selectDestination && beginEditorAtCursor(selectAll: true) {
+            return .handled
+        }
         isKeyboardFocused = true
         return .handled
     }
@@ -560,6 +622,30 @@ struct TrackEditorView: View {
     private func finishInlineEditorBeforeNavigation() {
         guard inlineEditor != nil else { return }
         commitInlineEditor()
+    }
+
+    private func beginEditorAtCursor(selectAll: Bool) -> Bool {
+        guard let track,
+              track.events.indices.contains(cursor.row),
+              cursor.row < track.terminatorIndex,
+              track.events[cursor.row].command < 0x80
+        else { return false }
+
+        switch cursor.column {
+        case .note:
+            return beginNoteEdit(
+                initialText: track.events[cursor.row].noteInputText,
+                selectAll: selectAll
+            )
+        case .st, .gt, .vel:
+            guard let value = track.events[cursor.row].numericValue(in: cursor.column) else {
+                return false
+            }
+            return beginNumericEdit(
+                value == 0 ? "" : String(value),
+                selectAll: selectAll
+            )
+        }
     }
 
     private func insertNoteBeforeCursor() {
@@ -592,7 +678,8 @@ struct TrackEditorView: View {
 
     private func beginNumericEdit(
         _ initialText: String,
-        origin: InlineEditorOrigin = .direct
+        origin: InlineEditorOrigin = .direct,
+        selectAll: Bool = false
     ) -> Bool {
         guard let track else { return false }
         let index = cursor.row
@@ -606,6 +693,7 @@ struct TrackEditorView: View {
             row: index,
             kind: .numeric(cursor.column),
             origin: origin,
+            selectsText: selectAll,
             copiedNotePreview: nil
         )
         isKeyboardFocused = false
@@ -619,7 +707,8 @@ struct TrackEditorView: View {
     private func beginNoteEdit(
         initialText: String,
         copiedNotePreview: String? = nil,
-        origin: InlineEditorOrigin = .direct
+        origin: InlineEditorOrigin = .direct,
+        selectAll: Bool = false
     ) -> Bool {
         guard let track else { return false }
         let index = cursor.row
@@ -634,6 +723,7 @@ struct TrackEditorView: View {
             row: index,
             kind: .note,
             origin: origin,
+            selectsText: selectAll,
             copiedNotePreview: copiedNotePreview
         )
         isKeyboardFocused = false
@@ -728,6 +818,7 @@ private struct TrackerInlineEditorField: View {
     private static let bufferWidth = CGFloat(TrackerTextInput.maximumLength) * characterWidth
 
     let mode: TrackerTextInputMode
+    let selectAll: Bool
     let copiedNotePreview: String?
     let isTrailing: Bool
     let onTextChange: (String) -> Void
@@ -740,18 +831,24 @@ private struct TrackerInlineEditorField: View {
     init(
         mode: TrackerTextInputMode,
         initialText: String,
+        selectAll: Bool,
         copiedNotePreview: String?,
         isTrailing: Bool,
         onTextChange: @escaping (String) -> Void,
         onCancel: @escaping () -> Void
     ) {
         self.mode = mode
+        self.selectAll = selectAll
         self.copiedNotePreview = copiedNotePreview
         self.isTrailing = isTrailing
         self.onTextChange = onTextChange
         self.onCancel = onCancel
         _input = State(
-            initialValue: TrackerTextInputSession(mode: mode, initialText: initialText)
+            initialValue: TrackerTextInputSession(
+                mode: mode,
+                initialText: initialText,
+                selectAll: selectAll
+            )
         )
     }
 
@@ -764,6 +861,13 @@ private struct TrackerInlineEditorField: View {
                 : copiedNotePreview ?? input.text
 
             ZStack(alignment: .leading) {
+                if input.isAllSelected {
+                    Rectangle()
+                        .fill(Color.blue.opacity(0.82))
+                        .frame(width: selectedTextWidth, height: 22)
+                        .offset(x: selectedTextOffset)
+                }
+
                 HStack(spacing: 0) {
                     if isTrailing {
                         Spacer(minLength: leadingEmptyWidth)
@@ -787,7 +891,7 @@ private struct TrackerInlineEditorField: View {
                 Rectangle()
                     .fill(Color.white)
                     .frame(width: 1, height: 18)
-                    .opacity(caretVisible ? 1 : 0)
+                    .opacity(caretVisible && !input.isAllSelected ? 1 : 0)
                     .offset(x: caretOffset)
             }
             .font(.system(size: 13, weight: .medium, design: .monospaced))
@@ -871,6 +975,17 @@ private struct TrackerInlineEditorField: View {
             ? max(0, TrackerTextInput.maximumLength - input.text.count)
             : 0
         return CGFloat(leadingEmptySlots + input.caretPosition) * Self.characterWidth
+    }
+
+    private var selectedTextOffset: CGFloat {
+        let leadingEmptySlots = isTrailing
+            ? max(0, TrackerTextInput.maximumLength - input.text.count)
+            : 0
+        return CGFloat(leadingEmptySlots) * Self.characterWidth
+    }
+
+    private var selectedTextWidth: CGFloat {
+        CGFloat(input.text.count) * Self.characterWidth
     }
 }
 
