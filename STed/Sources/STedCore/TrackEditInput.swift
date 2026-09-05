@@ -132,6 +132,14 @@ public enum TrackerTextInputMode: Equatable, Sendable {
     case note
 }
 
+public enum TrackerTextInputCommand: Equatable, Sendable {
+    case backspace
+    case delete
+    case clear
+    case moveToBeginning
+    case moveToEnd
+}
+
 /// The editable buffer and cursor used by an inline tracker cell.
 ///
 /// This deliberately keeps the insertion point separate from the text. The
@@ -168,6 +176,21 @@ public struct TrackerTextInputSession: Equatable, Sendable {
         characters.insert(character, at: caretPosition)
         text = String(characters)
         caretPosition += 1
+    }
+
+    public mutating func apply(_ command: TrackerTextInputCommand) {
+        switch command {
+        case .backspace:
+            backspace()
+        case .delete:
+            delete()
+        case .clear:
+            clear()
+        case .moveToBeginning:
+            moveToBeginning()
+        case .moveToEnd:
+            moveToEnd()
+        }
     }
 
     public mutating func moveLeft() {

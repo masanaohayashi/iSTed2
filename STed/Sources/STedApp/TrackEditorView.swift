@@ -18,7 +18,6 @@ private enum TrackerKeyBindings {
     static let directionalKeys: Set<KeyEquivalent> = [
         .upArrow, .downArrow, .leftArrow, .rightArrow
     ]
-    static let inputNavigationKeys = directionalKeys.union([.space])
 }
 
 struct TrackEditorView: View {
@@ -804,47 +803,59 @@ private struct TrackerInlineEditorField: View {
         .onAppear {
             isFocused = true
         }
-        .onKeyPress(.escape, phases: .down) { _ in
-            onCancel()
-            return .handled
-        }
-        .onKeyPress(keys: [.home, .end], phases: [.down, .repeat]) { press in
-            switch press.key {
-            case .home:
-                input.moveToBeginning()
-            case .end:
-                input.moveToEnd()
-            default:
-                return .ignored
-            }
-            hasDismissedPreview = true
-            return .handled
-        }
-        .onKeyPress(.clear, phases: .down) { _ in
-            hasDismissedPreview = true
-            input.clear()
-            onTextChange(input.text)
-            return .handled
-        }
         .onKeyPress(phases: .down) { press in
-            if press.key == .return {
+            switch press.key {
+            case .escape:
+                onCancel()
+                return .handled
+            case .return:
                 return .ignored
-            }
-            if TrackerKeyBindings.inputNavigationKeys.contains(press.key) {
+            case .upArrow, .downArrow, .leftArrow, .rightArrow, .space:
                 return .ignored
-            }
-            if press.key == .delete || press.characters == "\u{8}" {
+            case .home:
                 hasDismissedPreview = true
-                input.backspace()
+                input.apply(.moveToBeginning)
+                return .handled
+            case .end:
+                hasDismissedPreview = true
+                input.apply(.moveToEnd)
+                return .handled
+            case .clear:
+                hasDismissedPreview = true
+                input.apply(.clear)
+                onTextChange(input.text)
+                return .handled
+            case .delete:
+                hasDismissedPreview = true
+                input.apply(.backspace)
+                onTextChange(input.text)
+                return .handled
+            case .deleteForward:
+                hasDismissedPreview = true
+                input.apply(.delete)
+                onTextChange(input.text)
+                return .handled
+            default:
+                break
+            }
+
+            if press.characters == "\u{1b}" {
+                onCancel()
+                return .handled
+            }
+            if press.characters == "\u{8}" {
+                hasDismissedPreview = true
+                input.apply(.backspace)
                 onTextChange(input.text)
                 return .handled
             }
-            if press.key == .deleteForward || press.characters == "\u{7f}" {
+            if press.characters == "\u{7f}" {
                 hasDismissedPreview = true
-                input.delete()
+                input.apply(.delete)
                 onTextChange(input.text)
                 return .handled
             }
+
             guard !press.characters.isEmpty else { return .ignored }
             hasDismissedPreview = true
             input.insert(press.characters)
