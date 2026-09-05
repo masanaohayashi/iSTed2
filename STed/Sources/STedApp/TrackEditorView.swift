@@ -35,6 +35,7 @@ struct TrackEditorView: View {
         let row: Int
         let kind: InlineEditorKind
         let origin: InlineEditorOrigin
+        let sessionID: Int
         let selectsText: Bool
         let copiedNotePreview: String?
 
@@ -51,6 +52,7 @@ struct TrackEditorView: View {
     @State private var cursor = TrackCursor()
     @State private var inlineEditor: InlineEditor?
     @State private var inlineText = ""
+    @State private var inlineEditorSessionID = 0
     @FocusState private var isKeyboardFocused: Bool
     @State private var isTrackSettingsPresented = false
 
@@ -246,9 +248,7 @@ struct TrackEditorView: View {
         Text(title)
             .foregroundStyle(cursor.column == column ? TrackerPalette.cell : Color.white.opacity(0.9))
             .onTapGesture {
-                resetInlineEditor()
-                cursor.column = column
-                isKeyboardFocused = true
+                moveCursorToCell(row: cursor.row, column: column)
             }
     }
 
@@ -302,9 +302,13 @@ struct TrackEditorView: View {
         }
         .contentShape(Rectangle())
         .onTapGesture {
-            resetInlineEditor()
-            cursor.row = index
-            isKeyboardFocused = true
+            if inlineEditor != nil {
+                moveCursorToCell(row: index, column: cursor.column)
+            } else {
+                resetInlineEditor()
+                cursor.row = index
+                isKeyboardFocused = true
+            }
         }
     }
 
@@ -325,6 +329,7 @@ struct TrackEditorView: View {
                 copiedNotePreview: inlineEditor.copiedNotePreview,
                 isTrailing: column != .note
             )
+                .id(inlineEditor.sessionID)
                 .frame(maxWidth: .infinity, alignment: alignment)
         } else {
             Text(text)
@@ -333,9 +338,7 @@ struct TrackEditorView: View {
                 .background(active ? TrackerPalette.cell : Color.clear)
                 .foregroundStyle(active ? TrackerPalette.crt : TrackerPalette.phosphor)
                 .onTapGesture {
-                    resetInlineEditor()
-                    cursor = TrackCursor(row: index, column: column)
-                    isKeyboardFocused = true
+                    moveCursorToCell(row: index, column: column)
                 }
         }
     }
@@ -468,9 +471,10 @@ struct TrackEditorView: View {
                 selectDestination: selectDestination
             )
         }
+        let wasEditing = inlineEditor != nil
         finishInlineEditorBeforeNavigation()
         cursor.move(direction, rowCount: rowCount)
-        if selectDestination && beginEditorAtCursor(selectAll: true) {
+        if selectDestination && wasEditing && beginEditorAtCursor(selectAll: true) {
             return .handled
         }
         isKeyboardFocused = true
@@ -624,6 +628,20 @@ struct TrackEditorView: View {
         commitInlineEditor()
     }
 
+    private func moveCursorToCell(row: Int, column: EventColumn) {
+        let wasEditing = inlineEditor != nil
+        if wasEditing {
+            commitInlineEditor()
+        } else {
+            resetInlineEditor()
+        }
+        cursor = TrackCursor(row: row, column: column)
+        if wasEditing && beginEditorAtCursor(selectAll: true) {
+            return
+        }
+        isKeyboardFocused = true
+    }
+
     private func beginEditorAtCursor(selectAll: Bool) -> Bool {
         guard let track,
               track.events.indices.contains(cursor.row),
@@ -689,10 +707,12 @@ struct TrackEditorView: View {
         else { return false }
 
         inlineText = TrackerTextInput.normalizedNumeric(initialText)
+        inlineEditorSessionID += 1
         inlineEditor = InlineEditor(
             row: index,
             kind: .numeric(cursor.column),
             origin: origin,
+            sessionID: inlineEditorSessionID,
             selectsText: selectAll,
             copiedNotePreview: nil
         )
@@ -719,10 +739,12 @@ struct TrackEditorView: View {
 
         cursor.column = .note
         inlineText = TrackerTextInput.normalizedNote(initialText)
+        inlineEditorSessionID += 1
         inlineEditor = InlineEditor(
             row: index,
             kind: .note,
             origin: origin,
+            sessionID: inlineEditorSessionID,
             selectsText: selectAll,
             copiedNotePreview: copiedNotePreview
         )
@@ -818,7 +840,6 @@ private struct TrackerInlineEditorField: View {
     private static let bufferWidth = CGFloat(TrackerTextInput.maximumLength) * characterWidth
 
     let mode: TrackerTextInputMode
-    let selectAll: Bool
     let copiedNotePreview: String?
     let isTrailing: Bool
     let onTextChange: (String) -> Void
@@ -838,7 +859,6 @@ private struct TrackerInlineEditorField: View {
         onCancel: @escaping () -> Void
     ) {
         self.mode = mode
-        self.selectAll = selectAll
         self.copiedNotePreview = copiedNotePreview
         self.isTrailing = isTrailing
         self.onTextChange = onTextChange
@@ -967,25 +987,25 @@ private struct TrackerInlineEditorField: View {
     }
 
     private var leadingEmptyWidth: CGFloat {
-        CGFloat(max(0, TrackerTextInput.maximumLength - input.text.count)) * Self.characterWidth
+        CGFloat(leadingEmptySlots) * Self.characterWidth
     }
 
     private var caretOffset: CGFloat {
-        let leadingEmptySlots = isTrailing
-            ? max(0, TrackerTextInput.maximumLength - input.text.count)
-            : 0
         return CGFloat(leadingEmptySlots + input.caretPosition) * Self.characterWidth
     }
 
     private var selectedTextOffset: CGFloat {
-        let leadingEmptySlots = isTrailing
-            ? max(0, TrackerTextInput.maximumLength - input.text.count)
-            : 0
         return CGFloat(leadingEmptySlots) * Self.characterWidth
     }
 
     private var selectedTextWidth: CGFloat {
         CGFloat(input.text.count) * Self.characterWidth
+    }
+
+    private var leadingEmptySlots: Int {
+        isTrailing
+            ? max(0, TrackerTextInput.maximumLength - input.text.count)
+            : 0
     }
 }
 
