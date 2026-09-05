@@ -24,11 +24,19 @@ public struct TrackCursor: Equatable, Sendable {
         case .down:
             row = min(lastRow, row + 1)
         case .left:
-            guard let previous = EventColumn(rawValue: column.rawValue - 1) else { return }
-            column = previous
+            if let previous = EventColumn(rawValue: column.rawValue - 1) {
+                column = previous
+            } else {
+                column = .vel
+                row = max(0, row - 1)
+            }
         case .right:
-            guard let next = EventColumn(rawValue: column.rawValue + 1) else { return }
-            column = next
+            if let next = EventColumn(rawValue: column.rawValue + 1) {
+                column = next
+            } else {
+                column = .note
+                row = min(lastRow, row + 1)
+            }
         }
     }
 }
