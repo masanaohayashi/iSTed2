@@ -64,6 +64,25 @@ final class EventSchedulerTests: XCTestCase {
         ])
     }
 
+    func testJumpIncludesEventsAtTheStartTime() {
+        let scheduler = EventScheduler(
+            events: [
+                TimedMIDIEvent(seconds: 0.0, ticks: 0, bytes: [0x90, 60, 100]),
+                TimedMIDIEvent(seconds: 2.0, ticks: 192, bytes: [0x90, 64, 100]),
+                TimedMIDIEvent(seconds: 2.5, ticks: 240, bytes: [0x90, 67, 100])
+            ]
+        )
+        var fromStart: [[UInt8]] = []
+        scheduler.jump(to: 0)
+        scheduler.advance(to: 0, send: { fromStart.append($0) })
+        XCTAssertEqual(fromStart, [[0x90, 60, 100]])
+
+        var fromMeasure: [[UInt8]] = []
+        scheduler.jump(to: 2.0)
+        scheduler.advance(to: 2.0, send: { fromMeasure.append($0) })
+        XCTAssertEqual(fromMeasure, [[0x90, 64, 100]])
+    }
+
     func testSampleOffsetsAreRelativeToBufferStart() {
         let scheduler = EventScheduler(
             events: [

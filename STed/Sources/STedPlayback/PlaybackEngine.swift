@@ -152,7 +152,7 @@ public final class PlaybackEngine: ObservableObject {
         try? rebuildPlayback(resetPosition: false)
     }
 
-    public func play() async throws {
+    public func play(fromMeasure measure: Int? = nil) async throws {
         guard sequence != nil else { return }
         if !audio.isAttached {
             try await ensureAudio()
@@ -161,7 +161,11 @@ public final class PlaybackEngine: ObservableObject {
         }
         audioErrorMessage = nil
         if state != .paused {
-            pausedAt = 0
+            if let measure, let song {
+                pausedAt = song.seconds(atTick: song.startTick(ofMeasure: measure))
+            } else {
+                pausedAt = 0
+            }
         }
         runtime.play(from: pausedAt)
         state = .playing

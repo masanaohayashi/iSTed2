@@ -1,3 +1,10 @@
+enum TrackerMeasureLine {
+    static func text(stepCount: Int) -> String {
+        let count = String(format: "%5d", stepCount)
+        return "--------\(count) -----------"
+    }
+}
+
 public struct TrackerCells: Equatable, Sendable {
     public var note: String
     public var st: String

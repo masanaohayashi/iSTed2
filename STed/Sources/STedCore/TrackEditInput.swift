@@ -140,6 +140,51 @@ public enum TrackerTextInputCommand: Equatable, Sendable {
     case moveToEnd
 }
 
+/// Keys that STed2's main track editor loop treats as line deletion (`DEL`).
+///
+/// SwiftUI can report the Mac Delete key as `.delete`, `.deleteForward`,
+/// or a control character, so the editor matches every form.
+public enum TrackerEditorKey: Equatable, Sendable {
+    case delete
+    case deleteForward
+    case backspaceCharacter
+    case forwardDeleteCharacter
+    case insertMeasureLine
+
+    public init?(characters: String) {
+        switch characters {
+        case "\u{8}":
+            self = .backspaceCharacter
+        case "\u{7f}":
+            self = .forwardDeleteCharacter
+        case "=", "*":
+            self = .insertMeasureLine
+        default:
+            return nil
+        }
+    }
+}
+
+public enum TrackerEditorCommand: Equatable, Sendable {
+    case deleteSelectedRow
+    case insertMeasureLine
+}
+
+public enum TrackerEditorKeyMap {
+    public static func command(
+        for key: TrackerEditorKey,
+        isInlineEditing: Bool
+    ) -> TrackerEditorCommand? {
+        guard !isInlineEditing else { return nil }
+        switch key {
+        case .delete, .deleteForward, .backspaceCharacter, .forwardDeleteCharacter:
+            return .deleteSelectedRow
+        case .insertMeasureLine:
+            return .insertMeasureLine
+        }
+    }
+}
+
 /// The editable buffer and cursor used by an inline tracker cell.
 ///
 /// This deliberately keeps the insertion point separate from the text. The

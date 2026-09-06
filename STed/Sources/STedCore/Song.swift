@@ -54,6 +54,7 @@ public struct TrackEvent: Equatable, Sendable {
 
     public static let defaultNote = TrackEvent(command: 60, delay: 48, param1: 36, param2: 100)
     public static let defaultInsertedNote = TrackEvent(command: 60, delay: 48, param1: 46, param2: 100)
+    public static let measureLine = TrackEvent(command: 0xfd, delay: 0, param1: 0, param2: 0)
 
     public var isTerminator: Bool {
         command == 0xfe || command == 0xff
@@ -73,6 +74,7 @@ public struct EventRow: Equatable, Sendable {
     public var stText: String
     public var gtText: String
     public var velText: String
+    public var isMeasureLine: Bool = false
 }
 
 public struct Track: Equatable, Identifiable, Sendable {
@@ -169,6 +171,7 @@ public struct Track: Equatable, Identifiable, Sendable {
                 stepInMeasure += 1
             }
             let cells = event.trackerCells(nextEvents: events.dropFirst(eventIndex + 1))
+            let isMeasureLine = event.command == 0xfd
             rows.append(
                 EventRow(
                     time: time,
@@ -179,10 +182,15 @@ public struct Track: Equatable, Identifiable, Sendable {
                     vel: Int(event.param2),
                     showsMeasure: showsMeasure,
                     stepNumber: stepNumber,
-                    noteText: cells.note,
-                    stText: cells.st,
-                    gtText: cells.gt,
-                    velText: cells.vel
+                    noteText: isMeasureLine
+                        ? TrackerMeasureLine.text(
+                            stepCount: stepCount(endingAtMeasureLine: eventIndex)
+                        )
+                        : cells.note,
+                    stText: isMeasureLine ? "" : cells.st,
+                    gtText: isMeasureLine ? "" : cells.gt,
+                    velText: isMeasureLine ? "" : cells.vel,
+                    isMeasureLine: isMeasureLine
                 )
             )
             previousCommand = event.command
@@ -226,6 +234,50 @@ public struct Track: Equatable, Identifiable, Sendable {
         let clamped = min(max(0, index), terminatorIndex)
         events.insert(event, at: clamped)
         ensureTerminator()
+    }
+
+    public mutating func insertMeasureLine(at index: Int) {
+        insertEvent(.measureLine, at: index)
+    }
+
+    /// Step total of the measure that ends at `index`, matching STed2 `step_cluc`.
+    public func stepCount(endingAtMeasureLine index: Int) -> Int {
+        guard events.indices.contains(index) else { return 0 }
+
+        var total = 0
+        var multiplier = 1
+        var stack: [(multiplier: Int, total: Int, count: Int)] = []
+        var cursor = index
+
+        while cursor > 0 {
+            cursor -= 1
+            let event = events[cursor]
+            let command = event.command
+            if command < 0xf0 {
+                let delay = Int(event.delay)
+                if delay != 0 {
+                    total += delay * multiplier
+                }
+            } else if command > 0xfb {
+                break
+            } else if command == 0xf8 {
+                var count = Int(event.delay)
+                if count == 0 || count == 255 {
+                    count = 1
+                }
+                stack.append((multiplier, total, count))
+                multiplier *= count
+            } else if command == 0xf9 {
+                if let frame = stack.popLast() {
+                    multiplier = frame.multiplier
+                }
+            }
+        }
+
+        for frame in stack.reversed() {
+            total = frame.total + (total - frame.total) / max(1, frame.count)
+        }
+        return total
     }
 
     @discardableResult
@@ -304,6 +356,18 @@ public struct Song: Equatable, Sendable {
             beatNumerator: beatNumerator,
             beatDenominator: beatDenominator
         )
+    }
+
+    public var ticksPerMeasure: Int {
+        max(1, timeBase * beatNumerator * 4 / max(1, beatDenominator))
+    }
+
+    public func startTick(ofMeasure measure: Int) -> Int {
+        max(0, measure - 1) * ticksPerMeasure
+    }
+
+    public func seconds(atTick tick: Int) -> Double {
+        Double(max(0, tick)) * 60.0 / (Double(max(1, tempoBPM)) * Double(max(1, timeBase)))
     }
 }
 

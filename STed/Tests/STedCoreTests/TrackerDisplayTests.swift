@@ -72,6 +72,44 @@ final class TrackerDisplayTests: XCTestCase {
         XCTAssertEqual(cells.gt, "----")
     }
 
+    func testMeasureLineShowsThePrecedingMeasureStepCountInTheCenter() {
+        let track = Track(
+            id: 0,
+            number: 1,
+            events: [
+                TrackEvent(command: 60, delay: 48, param1: 36, param2: 100),
+                TrackEvent(command: 64, delay: 48, param1: 36, param2: 100),
+                TrackEvent.measureLine,
+                TrackEvent(command: 67, delay: 96, param1: 72, param2: 100),
+                TrackEvent(command: 0xfe, delay: 0, param1: 0, param2: 0)
+            ]
+        )
+        let rows = track.eventRows(timeBase: 48, beatNumerator: 4, beatDenominator: 4)
+
+        XCTAssertTrue(rows[2].isMeasureLine)
+        XCTAssertEqual(rows[2].noteText, "--------   96 -----------")
+        XCTAssertEqual(rows[2].stText, "")
+        XCTAssertEqual(rows[2].gtText, "")
+        XCTAssertEqual(rows[2].velText, "")
+        XCTAssertEqual(track.stepCount(endingAtMeasureLine: 2), 96)
+    }
+
+    func testMeasureLineStepCountExpandsRepeatMarkers() {
+        let track = Track(
+            id: 0,
+            number: 1,
+            events: [
+                TrackEvent(command: 0xf9, delay: 0, param1: 0, param2: 0),
+                TrackEvent(command: 60, delay: 48, param1: 36, param2: 100),
+                TrackEvent(command: 0xf8, delay: 2, param1: 0, param2: 0),
+                TrackEvent.measureLine,
+                TrackEvent(command: 0xfe, delay: 0, param1: 0, param2: 0)
+            ]
+        )
+
+        XCTAssertEqual(track.stepCount(endingAtMeasureLine: 3), 96)
+    }
+
     func testRowsNumberStepsInsideAMeasure() {
         let track = Track(
             id: 0,

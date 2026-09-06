@@ -192,4 +192,49 @@ final class TrackEditInputTests: XCTestCase {
             .applying(.pitchClass(3), column: .note)
         XCTAssertEqual(event.command, 0xee)
     }
+
+    func testDeleteControlCharactersMapToEditorDeleteKeys() {
+        XCTAssertEqual(TrackerEditorKey(characters: "\u{8}"), .backspaceCharacter)
+        XCTAssertEqual(TrackerEditorKey(characters: "\u{7f}"), .forwardDeleteCharacter)
+        XCTAssertNil(TrackerEditorKey(characters: "a"))
+    }
+
+    func testEqualsAndAsteriskInsertAMeasureLineOutsideSinput() {
+        XCTAssertEqual(TrackerEditorKey(characters: "="), .insertMeasureLine)
+        XCTAssertEqual(TrackerEditorKey(characters: "*"), .insertMeasureLine)
+        XCTAssertEqual(
+            TrackerEditorKeyMap.command(for: .insertMeasureLine, isInlineEditing: false),
+            .insertMeasureLine
+        )
+        XCTAssertNil(
+            TrackerEditorKeyMap.command(for: .insertMeasureLine, isInlineEditing: true)
+        )
+    }
+
+    func testMainEditorDeleteRemovesTheSelectedRow() {
+        let keys: [TrackerEditorKey] = [
+            .delete, .deleteForward, .backspaceCharacter, .forwardDeleteCharacter
+        ]
+
+        for key in keys {
+            XCTAssertEqual(
+                TrackerEditorKeyMap.command(for: key, isInlineEditing: false),
+                .deleteSelectedRow,
+                "\(key) should delete the selected row outside sinput"
+            )
+        }
+    }
+
+    func testInlineEditorKeepsDeleteForCharacterEditing() {
+        let keys: [TrackerEditorKey] = [
+            .delete, .deleteForward, .backspaceCharacter, .forwardDeleteCharacter
+        ]
+
+        for key in keys {
+            XCTAssertNil(
+                TrackerEditorKeyMap.command(for: key, isInlineEditing: true),
+                "\(key) should stay with the inline field during sinput"
+            )
+        }
+    }
 }

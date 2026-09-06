@@ -37,7 +37,8 @@ public final class EventScheduler: @unchecked Sendable {
     }
 
     public func jump(to seconds: Double) {
-        nextIndex = events.firstIndex { $0.seconds > seconds } ?? events.count
+        // Inclusive of the start time so the first step of a measure still plays.
+        nextIndex = events.firstIndex { $0.seconds >= seconds } ?? events.count
     }
 
     public func reset() {

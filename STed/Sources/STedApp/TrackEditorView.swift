@@ -171,7 +171,13 @@ struct TrackEditorView: View {
             // called from the track editor (exc & 1).
             return handleCursorKey(for: .rightArrow, rowCount: rows.count)
         }
+        .onKeyPress(keys: [.delete, .deleteForward], phases: .down) { press in
+            return handleEditorCommandKey(press) ?? .ignored
+        }
         .onKeyPress(phases: .down) { press in
+            if let result = handleEditorCommandKey(press) {
+                return result
+            }
             guard inlineEditor == nil else { return .ignored }
             if let digit = keyboardDigit(from: press) {
                 return beginNumericEdit(String(digit)) ? .handled : .ignored
@@ -208,7 +214,7 @@ struct TrackEditorView: View {
             .font(.system(size: 11, weight: .medium, design: .monospaced))
             .foregroundStyle(TrackerPalette.phosphor)
 
-            TransportBar(compact: true)
+            TransportBar(compact: true, playMeasure: cursorMeasure(track))
                 .tint(TrackerPalette.phosphor)
         }
     }
@@ -278,14 +284,29 @@ struct TrackEditorView: View {
             Text(row.stepNumber.map { String(format: "%3d", $0) } ?? "")
                 .frame(width: 36, alignment: .trailing)
             Text(":")
-            cell(row.noteText, column: .note, index: index, alignment: .leading)
-                .frame(maxWidth: .infinity, alignment: .leading)
-            cell(row.stText, column: .st, index: index, alignment: .trailing)
-                .frame(width: 44, alignment: .trailing)
-            cell(row.gtText, column: .gt, index: index, alignment: .trailing)
-                .frame(width: 52, alignment: .trailing)
-            cell(row.velText, column: .vel, index: index, alignment: .trailing)
-                .frame(width: 48, alignment: .trailing)
+            if row.isMeasureLine {
+                Text(row.noteText)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 2)
+                    .background(isSelected && cursor.column == .note ? TrackerPalette.cell : Color.clear)
+                    .foregroundStyle(
+                        isSelected && cursor.column == .note
+                            ? TrackerPalette.crt
+                            : TrackerPalette.phosphor
+                    )
+                    .onTapGesture {
+                        moveCursorToCell(row: index, column: .note)
+                    }
+            } else {
+                cell(row.noteText, column: .note, index: index, alignment: .leading)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                cell(row.stText, column: .st, index: index, alignment: .trailing)
+                    .frame(width: 44, alignment: .trailing)
+                cell(row.gtText, column: .gt, index: index, alignment: .trailing)
+                    .frame(width: 52, alignment: .trailing)
+                cell(row.velText, column: .vel, index: index, alignment: .trailing)
+                    .frame(width: 48, alignment: .trailing)
+            }
         }
         .font(.system(size: 13, weight: .medium, design: .monospaced))
         .foregroundStyle(TrackerPalette.phosphor)
@@ -439,6 +460,16 @@ struct TrackEditorView: View {
         isKeyboardFocused = true
     }
 
+    private func insertMeasureLine() {
+        guard let track else { return }
+        resetInlineEditor()
+        let index = min(max(0, cursor.row), track.terminatorIndex)
+        engine.insertEvent(trackID: trackID, at: index, .measureLine)
+        cursor = TrackCursor(row: index + 1, column: .note)
+        normalizeCursor()
+        isKeyboardFocused = true
+    }
+
     private func deleteEvent() {
         guard let track, cursor.row < track.terminatorIndex else { return }
         resetInlineEditor()
@@ -447,6 +478,37 @@ struct TrackEditorView: View {
         let newTerminatorIndex = max(0, track.terminatorIndex - 1)
         cursor.row = min(index, newTerminatorIndex)
         isKeyboardFocused = true
+    }
+
+    private func handleEditorCommandKey(_ press: KeyPress) -> KeyPress.Result? {
+        guard let key = trackerEditorKey(from: press),
+              let command = TrackerEditorKeyMap.command(
+                for: key,
+                isInlineEditing: inlineEditor != nil
+              )
+        else {
+            return nil
+        }
+
+        switch command {
+        case .deleteSelectedRow:
+            deleteEvent()
+            return .handled
+        case .insertMeasureLine:
+            insertMeasureLine()
+            return .handled
+        }
+    }
+
+    private func trackerEditorKey(from press: KeyPress) -> TrackerEditorKey? {
+        switch press.key {
+        case .delete:
+            return .delete
+        case .deleteForward:
+            return .deleteForward
+        default:
+            return TrackerEditorKey(characters: press.characters)
+        }
     }
 
     private func handleCursorKey(

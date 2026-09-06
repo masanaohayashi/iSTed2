@@ -62,6 +62,23 @@ final class TrackEditTests: XCTestCase {
         XCTAssertEqual(track.events[0], TrackEvent(command: 60, delay: 48, param1: 46, param2: 100))
     }
 
+    func testInsertMeasureLinePushesTheCurrentRowDown() {
+        var track = Track(
+            id: 0,
+            number: 1,
+            events: [
+                TrackEvent(command: 60, delay: 48, param1: 36, param2: 100),
+                TrackEvent(command: 64, delay: 48, param1: 36, param2: 100),
+                TrackEvent(command: 0xfe, delay: 0, param1: 0, param2: 0)
+            ]
+        )
+
+        track.insertMeasureLine(at: 1)
+
+        XCTAssertEqual(track.events.map(\.command), [60, 0xfd, 64, 0xfe])
+        XCTAssertEqual(track.events[1], TrackEvent.measureLine)
+    }
+
     func testDeleteLeavesTerminator() {
         var track = Track(
             id: 0,

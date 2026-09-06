@@ -28,6 +28,23 @@ final class PlaybackRuntimeTests: XCTestCase {
         XCTAssertEqual(offsets, [240])
     }
 
+    func testPlayFromStartTimeEmitsTheEventAtThatTime() {
+        let runtime = PlaybackRuntime()
+        runtime.load(
+            events: [
+                TimedMIDIEvent(seconds: 0.0, ticks: 0, bytes: [0x90, 60, 100]),
+                TimedMIDIEvent(seconds: 2.0, ticks: 192, bytes: [0x90, 64, 100])
+            ],
+            songEnd: 4
+        )
+        runtime.play(from: 2.0)
+        var messages: [[UInt8]] = []
+        runtime.render(frameCount: 48, sampleRate: 48_000) { bytes, _ in
+            messages.append(bytes)
+        }
+        XCTAssertEqual(messages, [[0x90, 64, 100]])
+    }
+
     func testDoesNotEmitWhileStopped() {
         let runtime = PlaybackRuntime()
         runtime.load(

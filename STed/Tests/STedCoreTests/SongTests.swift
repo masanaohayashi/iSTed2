@@ -104,6 +104,22 @@ final class SongTests: XCTestCase {
         XCTAssertEqual(time.measure, 2)
         XCTAssertEqual(time.step, 0)
     }
+
+    func testMeasureStartTickAndSecondsMatchTheFirstStep() {
+        let song = Song(
+            title: "",
+            timeBase: 48,
+            tempoBPM: 120,
+            beatNumerator: 4,
+            beatDenominator: 4,
+            tracks: []
+        )
+
+        XCTAssertEqual(song.startTick(ofMeasure: 1), 0)
+        XCTAssertEqual(song.startTick(ofMeasure: 2), 192)
+        XCTAssertEqual(song.seconds(atTick: 0), 0, accuracy: 0.000_001)
+        XCTAssertEqual(song.seconds(atTick: 192), 2.0, accuracy: 0.000_001)
+    }
 }
 
 struct TestTrack {

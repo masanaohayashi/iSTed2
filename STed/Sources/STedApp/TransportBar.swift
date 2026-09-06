@@ -5,6 +5,7 @@ struct TransportBar: View {
     @EnvironmentObject private var engine: PlaybackEngine
     @Environment(\.horizontalSizeClass) private var sizeClass
     var compact: Bool = false
+    var playMeasure: Int? = nil
 
     private var isCompact: Bool {
         compact || sizeClass == .compact
@@ -35,7 +36,7 @@ struct TransportBar: View {
     private func play() {
         Task {
             do {
-                try await engine.play()
+                try await engine.play(fromMeasure: playMeasure)
             } catch {
                 engine.reportAudioError(error)
             }
