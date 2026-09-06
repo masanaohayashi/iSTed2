@@ -199,6 +199,27 @@ final class TrackEditInputTests: XCTestCase {
         XCTAssertNil(TrackerEditorKey(characters: "a"))
     }
 
+    func testEscDuringNewNoteInputDeletesTheInsertedStep() {
+        XCTAssertEqual(
+            TrackerInlineCancelAction.forInsertedNote(true),
+            .deleteInsertedStep
+        )
+        XCTAssertEqual(
+            TrackerInlineCancelAction.forInsertedNote(false),
+            .discardEdits
+        )
+    }
+
+    func testLetterKeysInsertANoteOnMeasureLinesAndTheTerminator() {
+        XCTAssertEqual(TrackerNoteKeyAction.forCommand(60), .editExisting)
+        XCTAssertEqual(TrackerNoteKeyAction.forCommand(0xeb), .ignore)
+        XCTAssertEqual(TrackerNoteKeyAction.forCommand(0xee), .ignore)
+        XCTAssertEqual(TrackerNoteKeyAction.forCommand(0xf8), .ignore)
+        XCTAssertEqual(TrackerNoteKeyAction.forCommand(0xfc), .insertNew)
+        XCTAssertEqual(TrackerNoteKeyAction.forCommand(0xfd), .insertNew)
+        XCTAssertEqual(TrackerNoteKeyAction.forCommand(0xfe), .insertNew)
+    }
+
     func testEqualsAndAsteriskInsertAMeasureLineOutsideSinput() {
         XCTAssertEqual(TrackerEditorKey(characters: "="), .insertMeasureLine)
         XCTAssertEqual(TrackerEditorKey(characters: "*"), .insertMeasureLine)

@@ -170,6 +170,32 @@ public enum TrackerEditorCommand: Equatable, Sendable {
     case insertMeasureLine
 }
 
+/// What A–G does on the current tracker row, matching STed2 `kc>='A' && kc<='G'`.
+public enum TrackerInlineCancelAction: Equatable, Sendable {
+    case discardEdits
+    case deleteInsertedStep
+
+    public static func forInsertedNote(_ isInsertedNote: Bool) -> TrackerInlineCancelAction {
+        isInsertedNote ? .deleteInsertedStep : .discardEdits
+    }
+}
+
+public enum TrackerNoteKeyAction: Equatable, Sendable {
+    case editExisting
+    case insertNew
+    case ignore
+
+    public static func forCommand(_ command: UInt8) -> TrackerNoteKeyAction {
+        if command < 0x80 {
+            return .editExisting
+        }
+        if command > 0xfb {
+            return .insertNew
+        }
+        return .ignore
+    }
+}
+
 public enum TrackerEditorKeyMap {
     public static func command(
         for key: TrackerEditorKey,

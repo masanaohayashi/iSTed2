@@ -31,6 +31,11 @@ final class TrackerDisplayTests: XCTestCase {
         XCTAssertEqual(zeroVelocity.trackerCells.note, "     64")
     }
 
+    func testChordHidesStepTime() {
+        let event = TrackEvent(command: 60, delay: 0, param1: 36, param2: 100)
+        XCTAssertEqual(event.trackerCells.st, "")
+    }
+
     func testZeroStepComparesGateWithTheNextPositiveStep() {
         let track = Track(
             id: 0,
@@ -72,6 +77,21 @@ final class TrackerDisplayTests: XCTestCase {
         XCTAssertEqual(cells.gt, "----")
     }
 
+    func testPaddedNoteRowSharesTheMeasureLineCharacterGrid() {
+        let noteRow = TrackerColumn.note("C 3  48")
+            + TrackerColumn.value("192")
+            + TrackerColumn.value("190")
+            + TrackerColumn.value("100")
+        let bar = TrackerMeasureLine.text(stepCount: 192)
+
+        XCTAssertEqual(noteRow.count, 25)
+        XCTAssertEqual(bar.count, 25)
+        XCTAssertEqual(noteRow, "C 3  48   192   190   100")
+        XCTAssertEqual(bar, "--------  192 -----------")
+        XCTAssertEqual(String(noteRow.dropFirst(10).prefix(3)), "192")
+        XCTAssertEqual(String(bar.dropFirst(10).prefix(3)), "192")
+    }
+
     func testMeasureLineShowsThePrecedingMeasureStepCountInTheCenter() {
         let track = Track(
             id: 0,
@@ -88,6 +108,7 @@ final class TrackerDisplayTests: XCTestCase {
 
         XCTAssertTrue(rows[2].isMeasureLine)
         XCTAssertEqual(rows[2].noteText, "--------   96 -----------")
+        XCTAssertEqual(rows[2].noteText.count, 25)
         XCTAssertEqual(rows[2].stText, "")
         XCTAssertEqual(rows[2].gtText, "")
         XCTAssertEqual(rows[2].velText, "")

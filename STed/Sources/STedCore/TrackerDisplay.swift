@@ -1,7 +1,35 @@
 enum TrackerMeasureLine {
+    /// STed2 `trk_dis` prints `"--------" + fstr(step_cluc, 5) + " -----------"`
+    /// across the 25-character NOTE/ST/GT/VEL field.
     static func text(stepCount: Int) -> String {
         let count = String(format: "%5d", stepCount)
         return "--------\(count) -----------"
+    }
+}
+
+public enum TrackerColumn {
+    public static let noteWidth = 7
+    public static let valueWidth = 6
+
+    public static func note(_ text: String) -> String {
+        pad(text, to: noteWidth, aligning: .left)
+    }
+
+    public static func value(_ text: String) -> String {
+        pad(text, to: valueWidth, aligning: .right)
+    }
+
+    private enum Alignment {
+        case left
+        case right
+    }
+
+    private static func pad(_ text: String, to width: Int, aligning: Alignment) -> String {
+        if text.count >= width {
+            return aligning == .left ? String(text.prefix(width)) : String(text.suffix(width))
+        }
+        let spaces = String(repeating: " ", count: width - text.count)
+        return aligning == .left ? text + spaces : spaces + text
     }
 }
 
@@ -56,7 +84,7 @@ extension TrackEvent {
                 : "   " + String(format: "%4d", Int(command))
             return TrackerCells(
                 note: note,
-                st: "\(delay)",
+                st: delay == 0 ? "" : "\(delay)",
                 gt: gt,
                 vel: "\(param2)"
             )

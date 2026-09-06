@@ -1,6 +1,11 @@
 import SwiftUI
 import STedCore
 import STedPlayback
+#if os(macOS)
+import AppKit
+#else
+import UIKit
+#endif
 
 private enum TrackerPalette {
     static let crt = Color(red: 0.04, green: 0.055, blue: 0.09)
@@ -18,6 +23,47 @@ private enum TrackerKeyBindings {
     static let directionalKeys: Set<KeyEquivalent> = [
         .upArrow, .downArrow, .leftArrow, .rightArrow
     ]
+}
+
+/// Character columns match STed2 `trk_dis`: MEAS 5, STEP 5, NOTE+K# 7, ST/GT/VEL 6.
+private enum TrackerLayout {
+    static let fontSize: CGFloat = 19.5
+    static let headerFontSize: CGFloat = 16.5
+    static let characterWidth = monospacedAdvance(fontSize)
+    static let rowHeight: CGFloat = 33
+    static let caretHeight: CGFloat = 27
+
+    static let measWidth = width(5)
+    static let stepWidth = width(5)
+    static let noteWidth = width(TrackerColumn.noteWidth)
+    static let valueWidth = width(TrackerColumn.valueWidth)
+    static let dataWidth = noteWidth + valueWidth * 3
+
+    static func width(_ columns: Int) -> CGFloat {
+        CGFloat(columns) * characterWidth
+    }
+
+    static var rowFont: Font { monospacedFont(fontSize, weight: .medium) }
+    static var headerFont: Font { monospacedFont(headerFontSize, weight: .bold) }
+
+    static func monospacedAdvance(_ size: CGFloat) -> CGFloat {
+        #if os(macOS)
+        NSFont.monospacedSystemFont(ofSize: size, weight: .medium).maximumAdvancement.width
+        #else
+        let font = UIFont.monospacedSystemFont(ofSize: size, weight: .medium)
+        ("0" as NSString).size(withAttributes: [.font: font]).width
+        #endif
+    }
+
+    static func monospacedFont(_ size: CGFloat, weight: Font.Weight) -> Font {
+        #if os(macOS)
+        let nsWeight: NSFont.Weight = weight == .bold ? .bold : .medium
+        return Font(NSFont.monospacedSystemFont(ofSize: size, weight: nsWeight))
+        #else
+        let uiWeight: UIFont.Weight = weight == .bold ? .bold : .medium
+        return Font(UIFont.monospacedSystemFont(ofSize: size, weight: uiWeight))
+        #endif
+    }
 }
 
 struct TrackEditorView: View {
@@ -183,7 +229,7 @@ struct TrackEditorView: View {
                 return beginNumericEdit(String(digit)) ? .handled : .ignored
             }
             if let note = keyboardNoteCharacter(from: press) {
-                return beginNoteEdit(note) ? .handled : .ignored
+                return handleNoteLetter(note)
             }
             if press.characters == "-" {
                 return beginNumericEdit("-") ? .handled : .ignored
@@ -198,7 +244,7 @@ struct TrackEditorView: View {
                 isTrackSettingsPresented = true
             } label: {
                 Text("M:\(track.memo.isEmpty ? "--------" : track.memo)")
-                    .font(.system(size: 13, weight: .semibold, design: .monospaced))
+                    .font(.system(size: TrackerLayout.fontSize, weight: .semibold, design: .monospaced))
                     .foregroundStyle(TrackerPalette.phosphor)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
@@ -211,7 +257,7 @@ struct TrackEditorView: View {
                 headerField("USED", "\(track.terminatorIndex)")
                 Spacer(minLength: 0)
             }
-            .font(.system(size: 11, weight: .medium, design: .monospaced))
+            .font(.system(size: TrackerLayout.headerFontSize, weight: .medium, design: .monospaced))
             .foregroundStyle(TrackerPalette.phosphor)
 
             TransportBar(compact: true, playMeasure: cursorMeasure(track))
@@ -230,20 +276,23 @@ struct TrackEditorView: View {
     private var columnHeader: some View {
         HStack(spacing: 0) {
             Text("MEAS")
-                .frame(width: 36, alignment: .trailing)
+                .lineLimit(1)
+                .frame(width: TrackerLayout.measWidth, alignment: .trailing)
             Text("STEP")
-                .frame(width: 36, alignment: .trailing)
+                .lineLimit(1)
+                .frame(width: TrackerLayout.stepWidth, alignment: .trailing)
             Text(":")
-            columnTitle("NOTE K#", .note)
-                .frame(maxWidth: .infinity, alignment: .leading)
-            columnTitle("ST", .st)
-                .frame(width: 44, alignment: .trailing)
-            columnTitle("GT", .gt)
-                .frame(width: 52, alignment: .trailing)
-            columnTitle("VEL", .vel)
-                .frame(width: 48, alignment: .trailing)
+            columnTitle(TrackerColumn.note("NOTE K#"), .note)
+                .frame(width: TrackerLayout.noteWidth, alignment: .leading)
+            columnTitle(TrackerColumn.value("ST"), .st)
+                .frame(width: TrackerLayout.valueWidth, alignment: .leading)
+            columnTitle(TrackerColumn.value("GT"), .gt)
+                .frame(width: TrackerLayout.valueWidth, alignment: .leading)
+            columnTitle(TrackerColumn.value("VEL"), .vel)
+                .frame(width: TrackerLayout.valueWidth, alignment: .leading)
+            Spacer(minLength: 0)
         }
-        .font(.system(size: 11, weight: .bold, design: .monospaced))
+        .font(TrackerLayout.headerFont)
         .foregroundStyle(Color.white.opacity(0.9))
         .padding(.vertical, 4)
         .padding(.horizontal, 4)
@@ -252,6 +301,7 @@ struct TrackEditorView: View {
 
     private func columnTitle(_ title: String, _ column: EventColumn) -> some View {
         Text(title)
+            .lineLimit(1)
             .foregroundStyle(cursor.column == column ? TrackerPalette.cell : Color.white.opacity(0.9))
             .onTapGesture {
                 moveCursorToCell(row: cursor.row, column: column)
@@ -279,15 +329,17 @@ struct TrackEditorView: View {
         let isSelected = cursor.row == index
         let isPlayhead = row.time.tick <= engine.positionTick
         return HStack(spacing: 0) {
-            Text(row.showsMeasure ? String(format: "%3d", row.time.measure) : "")
-                .frame(width: 36, alignment: .trailing)
-            Text(row.stepNumber.map { String(format: "%3d", $0) } ?? "")
-                .frame(width: 36, alignment: .trailing)
+            Text(row.showsMeasure ? String(format: "%5d", row.time.measure) : "")
+                .lineLimit(1)
+                .frame(width: TrackerLayout.measWidth, alignment: .trailing)
+            Text(row.stepNumber.map { String(format: "%5d", $0) } ?? "")
+                .lineLimit(1)
+                .frame(width: TrackerLayout.stepWidth, alignment: .trailing)
             Text(":")
-            if row.isMeasureLine {
+            if row.isMeasureLine || row.isTerminator {
                 Text(row.noteText)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, 2)
+                    .lineLimit(1)
+                    .frame(width: TrackerLayout.dataWidth, alignment: .leading)
                     .background(isSelected && cursor.column == .note ? TrackerPalette.cell : Color.clear)
                     .foregroundStyle(
                         isSelected && cursor.column == .note
@@ -298,17 +350,18 @@ struct TrackEditorView: View {
                         moveCursorToCell(row: index, column: .note)
                     }
             } else {
-                cell(row.noteText, column: .note, index: index, alignment: .leading)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                cell(row.stText, column: .st, index: index, alignment: .trailing)
-                    .frame(width: 44, alignment: .trailing)
-                cell(row.gtText, column: .gt, index: index, alignment: .trailing)
-                    .frame(width: 52, alignment: .trailing)
-                cell(row.velText, column: .vel, index: index, alignment: .trailing)
-                    .frame(width: 48, alignment: .trailing)
+                cell(TrackerColumn.note(row.noteText), column: .note, index: index, alignment: .leading)
+                    .frame(width: TrackerLayout.noteWidth, alignment: .leading)
+                cell(TrackerColumn.value(row.stText), column: .st, index: index, alignment: .leading)
+                    .frame(width: TrackerLayout.valueWidth, alignment: .leading)
+                cell(TrackerColumn.value(row.gtText), column: .gt, index: index, alignment: .leading)
+                    .frame(width: TrackerLayout.valueWidth, alignment: .leading)
+                cell(TrackerColumn.value(row.velText), column: .vel, index: index, alignment: .leading)
+                    .frame(width: TrackerLayout.valueWidth, alignment: .leading)
             }
+            Spacer(minLength: 0)
         }
-        .font(.system(size: 13, weight: .medium, design: .monospaced))
+        .font(TrackerLayout.rowFont)
         .foregroundStyle(TrackerPalette.phosphor)
         .padding(.horizontal, 4)
         .padding(.vertical, 3)
@@ -354,8 +407,8 @@ struct TrackEditorView: View {
                 .frame(maxWidth: .infinity, alignment: alignment)
         } else {
             Text(text)
+                .lineLimit(1)
                 .frame(maxWidth: .infinity, alignment: alignment)
-                .padding(.horizontal, 2)
                 .background(active ? TrackerPalette.cell : Color.clear)
                 .foregroundStyle(active ? TrackerPalette.crt : TrackerPalette.phosphor)
                 .onTapGesture {
@@ -407,7 +460,7 @@ struct TrackEditorView: View {
             HStack(spacing: 8) {
                 Button(action: insertEvent) {
                     Text("挿入")
-                        .font(.system(size: 18, weight: .bold, design: .monospaced))
+                        .font(.system(size: 27, weight: .bold, design: .monospaced))
                         .frame(maxWidth: .infinity, minHeight: 52)
                         .foregroundStyle(TrackerPalette.crt)
                         .background(TrackerPalette.insert)
@@ -417,7 +470,7 @@ struct TrackEditorView: View {
 
                 Button(action: deleteEvent) {
                     Text("削除")
-                        .font(.system(size: 18, weight: .bold, design: .monospaced))
+                        .font(.system(size: 27, weight: .bold, design: .monospaced))
                         .frame(maxWidth: .infinity, minHeight: 52)
                         .foregroundStyle(.white)
                         .background(TrackerPalette.danger)
@@ -782,6 +835,38 @@ struct TrackEditorView: View {
         return true
     }
 
+    private func handleNoteLetter(_ initialCharacter: Character) -> KeyPress.Result {
+        guard let track else { return .ignored }
+        let index = min(max(0, cursor.row), track.terminatorIndex)
+        guard track.events.indices.contains(index) else { return .ignored }
+
+        switch TrackerNoteKeyAction.forCommand(track.events[index].command) {
+        case .editExisting:
+            return beginNoteEdit(initialCharacter) ? .handled : .ignored
+        case .insertNew:
+            return insertNoteAndBeginEdit(initialCharacter)
+        case .ignore:
+            return .ignored
+        }
+    }
+
+    private func insertNoteAndBeginEdit(_ initialCharacter: Character) -> KeyPress.Result {
+        guard let track else { return .ignored }
+        resetInlineEditor()
+        let index = min(max(0, cursor.row), track.terminatorIndex)
+        let insertedEvent = engine.insertNoteBefore(trackID: trackID, at: index)
+        cursor = TrackCursor(row: index, column: .note)
+        if beginNoteEdit(
+            initialText: String(initialCharacter),
+            copiedNotePreview: insertedEvent?.noteInputText,
+            origin: .insertedNote
+        ) {
+            return .handled
+        }
+        isKeyboardFocused = true
+        return .handled
+    }
+
     private func beginNoteEdit(_ initialCharacter: Character) -> Bool {
         beginNoteEdit(initialText: String(initialCharacter))
     }
@@ -851,8 +936,18 @@ struct TrackEditorView: View {
     }
 
     private func cancelInlineEditor() {
-        resetInlineEditor()
-        isKeyboardFocused = true
+        let editor = inlineEditor
+        switch TrackerInlineCancelAction.forInsertedNote(editor?.origin == .insertedNote) {
+        case .deleteInsertedStep:
+            if let row = editor?.row {
+                cursor.row = row
+            }
+            resetInlineEditor()
+            deleteEvent()
+        case .discardEdits:
+            resetInlineEditor()
+            isKeyboardFocused = true
+        }
     }
 
     private func resetInlineEditor() {
@@ -898,8 +993,9 @@ struct TrackEditorView: View {
 }
 
 private struct TrackerInlineEditorField: View {
-    private static let characterWidth: CGFloat = 8
+    private static let characterWidth = TrackerLayout.characterWidth
     private static let bufferWidth = CGFloat(TrackerTextInput.maximumLength) * characterWidth
+    private static let fieldHeight = TrackerLayout.rowHeight
 
     let mode: TrackerTextInputMode
     let copiedNotePreview: String?
@@ -946,7 +1042,7 @@ private struct TrackerInlineEditorField: View {
                 if input.isAllSelected {
                     Rectangle()
                         .fill(Color.blue.opacity(0.82))
-                        .frame(width: selectedTextWidth, height: 22)
+                        .frame(width: selectedTextWidth, height: Self.fieldHeight)
                         .offset(x: selectedTextOffset)
                 }
 
@@ -959,7 +1055,7 @@ private struct TrackerInlineEditorField: View {
                         Text(String(character))
                             .frame(
                                 width: Self.characterWidth,
-                                height: 22,
+                                height: Self.fieldHeight,
                                 alignment: .leading
                             )
                     }
@@ -972,15 +1068,15 @@ private struct TrackerInlineEditorField: View {
 
                 Rectangle()
                     .fill(Color.white)
-                    .frame(width: 1, height: 18)
+                    .frame(width: 1, height: TrackerLayout.caretHeight)
                     .opacity(caretVisible && !input.isAllSelected ? 1 : 0)
                     .offset(x: caretOffset)
             }
-            .font(.system(size: 13, weight: .medium, design: .monospaced))
+            .font(TrackerLayout.rowFont)
             .foregroundStyle(TrackerPalette.crt)
-            .frame(width: Self.bufferWidth, height: 22, alignment: .leading)
+            .frame(width: Self.bufferWidth, height: Self.fieldHeight, alignment: .leading)
         }
-        .frame(width: Self.bufferWidth, height: 22)
+        .frame(width: Self.bufferWidth, height: Self.fieldHeight)
         .padding(.horizontal, 2)
         .background(TrackerPalette.cell)
         .focusable()
@@ -1117,7 +1213,7 @@ private struct FlickKeyPad: View {
                     y: min(18, max(-18, translation.height * 0.18))
                 )
         }
-        .font(.system(size: 13, weight: .semibold, design: .monospaced))
+        .font(.system(size: TrackerLayout.fontSize, weight: .semibold, design: .monospaced))
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .contentShape(Rectangle())
         .gesture(
