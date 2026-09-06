@@ -7,6 +7,7 @@ final class ProjectFileTests: XCTestCase {
     func testNewProjectStartsWithoutFileAndSaveOverwritesKnownURL() throws {
         let engine = PlaybackEngine()
         try engine.loadDemo()
+        XCTAssertFalse(engine.isDirty)
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("sted-project-\(UUID().uuidString).rcp")
         defer { try? FileManager.default.removeItem(at: url) }
@@ -21,9 +22,12 @@ final class ProjectFileTests: XCTestCase {
 
         try engine.save(to: url)
         XCTAssertEqual(engine.currentFileURL, url)
+        XCTAssertFalse(engine.isDirty)
 
         engine.updateSongSettings(title: "Saved project", tempoBPM: 90, numerator: 3, denominator: 4)
+        XCTAssertTrue(engine.isDirty)
         try engine.save()
+        XCTAssertFalse(engine.isDirty)
         let loaded = try RCPDecoder.song(from: Data(contentsOf: url))
         XCTAssertEqual(loaded.title, "Saved project")
         XCTAssertEqual(loaded.tempoBPM, 90)
@@ -40,8 +44,11 @@ final class ProjectFileTests: XCTestCase {
 
         try engine.load(url: url)
         XCTAssertEqual(engine.currentFileURL, url)
+        XCTAssertFalse(engine.isDirty)
         engine.updateSongSettings(title: "Updated", tempoBPM: 100, numerator: 4, denominator: 4)
+        XCTAssertTrue(engine.isDirty)
         try engine.save()
+        XCTAssertFalse(engine.isDirty)
         XCTAssertEqual(try RCPDecoder.song(from: Data(contentsOf: url)).title, "Updated")
     }
 }

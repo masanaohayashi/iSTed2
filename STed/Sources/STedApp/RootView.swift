@@ -12,6 +12,8 @@ struct RootView: View {
     @State private var isImporterPresented = false
     @State private var isExporterPresented = false
     @State private var exportDocument = RCPFileDocument()
+    @State private var pendingFileOperation: PlaybackEngine.FileOperation?
+    @State private var pendingOperationAfterSave: PlaybackEngine.FileOperation?
 
     var body: some View {
         Group {
@@ -52,6 +54,24 @@ struct RootView: View {
             engine.consumeFileOperation()
             handleFileOperation(operation)
         }
+        .alert("変更を保存しますか？", isPresented: Binding(
+            get: { pendingFileOperation != nil },
+            set: { isPresented in
+                if !isPresented { pendingFileOperation = nil }
+            }
+        )) {
+            Button("キャンセル") {
+                pendingFileOperation = nil
+            }
+            Button("いいえ") {
+                continuePendingFileOperation(save: false)
+            }
+            Button("はい") {
+                continuePendingFileOperation(save: true)
+            }
+        } message: {
+            Text("保存していない変更があります。")
+        }
         .fileExporter(
             isPresented: $isExporterPresented,
             document: exportDocument,
@@ -61,7 +81,12 @@ struct RootView: View {
             switch result {
             case .success(let url):
                 engine.recordSavedFile(at: url)
+                if let operation = pendingOperationAfterSave {
+                    pendingOperationAfterSave = nil
+                    performFileOperation(operation)
+                }
             case .failure(let error):
+                pendingOperationAfterSave = nil
                 engine.reportError(error)
             }
         }
@@ -148,6 +173,48 @@ struct RootView: View {
     private func handleFileOperation(_ operation: PlaybackEngine.FileOperation) {
         switch operation {
         case .newProject:
+            requestFileOperationIfNeeded(operation)
+        case .open:
+            requestFileOperationIfNeeded(operation)
+        case .save:
+            performFileOperation(operation)
+        case .saveAs:
+            performFileOperation(operation)
+        }
+    }
+
+    private func requestFileOperationIfNeeded(_ operation: PlaybackEngine.FileOperation) {
+        if engine.isDirty {
+            pendingFileOperation = operation
+        } else {
+            performFileOperation(operation)
+        }
+    }
+
+    private func continuePendingFileOperation(save: Bool) {
+        guard let operation = pendingFileOperation else { return }
+        pendingFileOperation = nil
+        if !save {
+            performFileOperation(operation)
+            return
+        }
+
+        if engine.currentFileURL != nil {
+            do {
+                try engine.save()
+                performFileOperation(operation)
+            } catch {
+                engine.reportError(error)
+            }
+        } else {
+            pendingOperationAfterSave = operation
+            beginSaveAs()
+        }
+    }
+
+    private func performFileOperation(_ operation: PlaybackEngine.FileOperation) {
+        switch operation {
+        case .newProject:
             path.removeAll()
             engine.newProject()
         case .open:
@@ -172,6 +239,7 @@ struct RootView: View {
             exportDocument = RCPFileDocument(data: try engine.encodedRCP())
             isExporterPresented = true
         } catch {
+            pendingOperationAfterSave = nil
             engine.reportError(error)
         }
     }

@@ -35,14 +35,18 @@ public final class PlaybackEngine: ObservableObject {
     @Published public private(set) var title: String = ""
     @Published public private(set) var currentFileURL: URL?
     @Published public private(set) var requestedFileOperation: FileOperation?
+    @Published public private(set) var isDirty = false
+    private var savedSong: Song?
     @Published public private(set) var song: Song? {
         didSet {
-            guard !isRestoringHistory, oldValue != song else { return }
-            if editStart == nil, let oldValue {
-                undoSongs.append(oldValue)
-                if undoSongs.count > 100 { undoSongs.removeFirst() }
-                redoSongs.removeAll()
+            if !isRestoringHistory, oldValue != song {
+                if editStart == nil, let oldValue {
+                    undoSongs.append(oldValue)
+                    if undoSongs.count > 100 { undoSongs.removeFirst() }
+                    redoSongs.removeAll()
+                }
             }
+            refreshDirtyState()
             refreshHistoryAvailability()
         }
     }
@@ -78,6 +82,10 @@ public final class PlaybackEngine: ObservableObject {
     private func refreshHistoryAvailability() {
         canUndo = !undoSongs.isEmpty || (editStart != nil && editStart != song)
         canRedo = !redoSongs.isEmpty && (editStart == nil || editStart == song)
+    }
+
+    private func refreshDirtyState() {
+        isDirty = song != savedSong
     }
 
     public func undo() {
@@ -183,6 +191,8 @@ public final class PlaybackEngine: ObservableObject {
         selectedTrackID = loaded.tracks.first?.id
         self.title = loaded.title.isEmpty ? title : loaded.title
         currentFileURL = fileURL
+        savedSong = loaded
+        refreshDirtyState()
         try rebuildPlayback(resetPosition: true)
         state = .loaded
         errorMessage = nil
@@ -228,6 +238,8 @@ public final class PlaybackEngine: ObservableObject {
         selectedTrackID = track.id
         title = ""
         currentFileURL = nil
+        savedSong = fresh
+        refreshDirtyState()
         errorMessage = nil
         historyRevision += 1
         try? rebuildPlayback(resetPosition: true)
@@ -267,11 +279,15 @@ public final class PlaybackEngine: ObservableObject {
         }
         try data.write(to: url, options: .atomic)
         currentFileURL = url
+        savedSong = song
+        refreshDirtyState()
     }
 
     /// Records the URL written by SwiftUI's Save As exporter.
     public func recordSavedFile(at url: URL) {
         currentFileURL = url
+        savedSong = song
+        refreshDirtyState()
     }
 
     public func updateEvent(trackID: Int, index: Int, _ event: TrackEvent) {

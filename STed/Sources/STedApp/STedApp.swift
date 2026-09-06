@@ -1,14 +1,24 @@
 import SwiftUI
 import STedPlayback
+#if os(macOS)
+import AppKit
+import UniformTypeIdentifiers
+#endif
 
 @main
 struct STedApplication: App {
     @StateObject private var engine = PlaybackEngine()
+#if os(macOS)
+    @NSApplicationDelegateAdaptor(STedApplicationDelegate.self) private var appDelegate
+#endif
 
     var body: some Scene {
         WindowGroup {
             ContentView()
                 .environmentObject(engine)
+#if os(macOS)
+                .onAppear { appDelegate.engine = engine }
+#endif
                 .task {
                     do {
                         try await engine.prepareAudio()
@@ -30,6 +40,57 @@ struct STedApplication: App {
         }
     }
 }
+
+#if os(macOS)
+@MainActor
+private final class STedApplicationDelegate: NSObject, NSApplicationDelegate {
+    weak var engine: PlaybackEngine?
+
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        guard let engine, engine.isDirty else { return .terminateNow }
+
+        let alert = NSAlert()
+        alert.messageText = "変更を保存しますか？"
+        alert.informativeText = "保存していない変更があります。"
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "キャンセル")
+        alert.addButton(withTitle: "いいえ")
+        alert.addButton(withTitle: "はい")
+
+        switch alert.runModal() {
+        case .alertFirstButtonReturn:
+            return .terminateCancel
+        case .alertSecondButtonReturn:
+            return .terminateNow
+        default:
+            if let currentFileURL = engine.currentFileURL {
+                do {
+                    try engine.save(to: currentFileURL)
+                    return .terminateNow
+                } catch {
+                    engine.reportError(error)
+                    return .terminateCancel
+                }
+            }
+
+            let panel = NSSavePanel()
+            panel.canCreateDirectories = true
+            panel.allowedContentTypes = [.data]
+            panel.nameFieldStringValue = engine.exportFileName
+            guard panel.runModal() == .OK, let url = panel.url else {
+                return .terminateCancel
+            }
+            do {
+                try engine.save(to: url)
+                return .terminateNow
+            } catch {
+                engine.reportError(error)
+                return .terminateCancel
+            }
+        }
+    }
+}
+#endif
 
 private struct TrackerFileCommands: Commands {
     @ObservedObject var engine: PlaybackEngine
