@@ -504,6 +504,7 @@ public final class PlaybackEngine: ObservableObject {
             audio.panic()
         }
         positionSeconds = pausedAt
+        audio.beginPlayback()
         runtime.play(from: pausedAt)
         state = .playing
         startClock()

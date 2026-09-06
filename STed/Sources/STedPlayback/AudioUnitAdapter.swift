@@ -191,6 +191,10 @@ public final class AudioUnitAdapter: MIDISink {
         renderContext.midiOut.panic()
     }
 
+    func beginPlayback() {
+        renderContext.midiOut.beginPlayback()
+    }
+
     private func bindMIDITarget(_ unit: AVAudioUnit) {
         renderContext.midiOut.bind(scheduleBlock: unit.auAudioUnit.scheduleMIDIEventBlock)
     }
