@@ -195,11 +195,43 @@ struct TrackEditorView: View {
             isKeyboardFocused = true
         }
         .onChange(of: trackID) { _, _ in
+            engine.endEdit()
             toneEditor = nil
             resetInlineEditor()
             normalizeCursor()
             isKeyboardFocused = true
         }
+        .onDisappear { engine.endEdit() }
+        .onChange(of: engine.historyRevision) { _, _ in clearHistoryEditors() }
+        .focusedSceneValue(\.trackerHistory, TrackerHistoryActions(
+            undo: { performHistory(redo: false) },
+            redo: { performHistory(redo: true) },
+            hasDraft: inlineEditor != nil || toneEditor != nil
+        ))
+    }
+
+    private func clearHistoryEditors() {
+        toneEditor = nil
+        isToneSelectorFocused = false
+        specialInsert = nil
+        isSpecialSelectorPresented = false
+        resetInlineEditor()
+        normalizeCursor()
+        isKeyboardFocused = true
+    }
+
+    private func performHistory(redo: Bool) {
+        if toneEditor != nil { closeToneSelector(confirming: false) }
+        if let editor = inlineEditor {
+            if editor.origin == .insertedSpecial {
+                if case .special = editor.kind { commitSpecialField(inlineText) }
+            } else {
+                commitInlineEditor()
+            }
+        }
+        engine.endEdit()
+        clearHistoryEditors()
+        if redo { engine.redo() } else { engine.undo() }
     }
 
     private var title: String {
@@ -304,6 +336,7 @@ struct TrackEditorView: View {
             return handleEditorCommandKey(press) ?? .ignored
         }
         .onKeyPress(phases: [.down, .repeat]) { press in
+            if press.modifiers.contains(.command) { return .ignored }
             if toneEditor != nil {
                 if TrackerKeyBindings.directionalKeys.contains(press.key) {
                     return handleCursorKey(for: press.key, rowCount: rows.count)
@@ -921,6 +954,7 @@ struct TrackEditorView: View {
     ) -> KeyPress.Result {
         guard let row = inlineEditor?.row else { return .ignored }
         commitInlineEditor()
+        engine.endEdit()
         cursor = TrackCursor(row: row, column: .note)
         cursor.move(direction, rowCount: rowCount)
         if selectDestination && beginEditorAtCursor(selectAll: true) {
@@ -937,6 +971,7 @@ struct TrackEditorView: View {
             return
         }
         commitInlineEditor()
+        engine.endEdit()
     }
 
     private func moveCursorToCell(row: Int, column: EventColumn) {
@@ -946,6 +981,7 @@ struct TrackEditorView: View {
         } else {
             resetInlineEditor()
         }
+        engine.endEdit()
         cursor = TrackCursor(row: row, column: column)
         if wasEditing && beginEditorAtCursor(selectAll: true) {
             return
@@ -978,6 +1014,7 @@ struct TrackEditorView: View {
     private func insertNoteBeforeCursor() {
         guard let track else { return }
         resetInlineEditor()
+        engine.beginEdit()
         let index = min(max(0, cursor.row), track.terminatorIndex)
         let insertedEvent = engine.insertNoteBefore(trackID: trackID, at: index)
         cursor = TrackCursor(row: index, column: .note)
@@ -1069,6 +1106,7 @@ struct TrackEditorView: View {
     private func insertNoteAndBeginEdit(_ initialCharacter: Character) -> KeyPress.Result {
         guard let track else { return .ignored }
         resetInlineEditor()
+        engine.beginEdit()
         let index = min(max(0, cursor.row), track.terminatorIndex)
         let insertedEvent = engine.insertNoteBefore(trackID: trackID, at: index)
         cursor = TrackCursor(row: index, column: .note)
@@ -1190,6 +1228,7 @@ struct TrackEditorView: View {
             resetInlineEditor()
             isKeyboardFocused = true
         }
+        engine.endEdit()
     }
 
     private func resetInlineEditor() {
@@ -1200,6 +1239,7 @@ struct TrackEditorView: View {
     private func insertSpecialController() {
         guard let track else { return }
         resetInlineEditor()
+        engine.beginEdit()
         isSpecialSelectorPresented = false
         let index = min(max(0, cursor.row), track.terminatorIndex)
         engine.insertEvent(trackID: trackID, at: index, .specialControllerPlaceholder)
@@ -1373,6 +1413,7 @@ struct TrackEditorView: View {
     }
 
     private func finishSpecialInsert() {
+        engine.endEdit()
         let row = specialInsert?.row ?? cursor.row
         specialInsert = nil
         isSpecialSelectorPresented = false
@@ -1554,6 +1595,7 @@ struct TrackEditorView: View {
         .focusEffectDisabled()
         .onAppear { isToneSelectorFocused = true }
         .onKeyPress(phases: [.down, .repeat]) { press in
+            if press.modifiers.contains(.command) { return .ignored }
             switch press.key {
             case .upArrow: toneIndex = ProgramToneList.moved(toneIndex, by: -1)
             case .downArrow: toneIndex = ProgramToneList.moved(toneIndex, by: 1)
@@ -1762,6 +1804,7 @@ private struct TrackerInlineEditorField: View {
             isFocused = true
         }
         .onKeyPress(phases: .down) { press in
+            if press.modifiers.contains(.command) { return .ignored }
             switch press.key {
             case .escape:
                 onCancel()

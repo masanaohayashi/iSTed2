@@ -15,7 +15,68 @@ public final class PlaybackEngine: ObservableObject {
     @Published public private(set) var positionSeconds: Double = 0
     @Published public private(set) var songEndSeconds: Double = 0
     @Published public private(set) var title: String = ""
-    @Published public private(set) var song: Song?
+    @Published public private(set) var song: Song? {
+        didSet {
+            guard !isRestoringHistory, oldValue != song else { return }
+            if editStart == nil, let oldValue {
+                undoSongs.append(oldValue)
+                if undoSongs.count > 100 { undoSongs.removeFirst() }
+                redoSongs.removeAll()
+            }
+            refreshHistoryAvailability()
+        }
+    }
+    @Published public private(set) var canUndo = false
+    @Published public private(set) var canRedo = false
+    @Published public private(set) var historyRevision = 0
+    private var undoSongs: [Song] = []
+    private var redoSongs: [Song] = []
+    private var editStart: Song?
+    private var isRestoringHistory = false
+
+    public func beginEdit() {
+        endEdit()
+        editStart = song
+    }
+
+    public func endEdit() {
+        if let editStart, editStart != song {
+            undoSongs.append(editStart)
+            if undoSongs.count > 100 { undoSongs.removeFirst() }
+            redoSongs.removeAll()
+        }
+        editStart = nil
+        refreshHistoryAvailability()
+    }
+
+    private func refreshHistoryAvailability() {
+        canUndo = !undoSongs.isEmpty || (editStart != nil && editStart != song)
+        canRedo = !redoSongs.isEmpty && (editStart == nil || editStart == song)
+    }
+
+    public func undo() {
+        endEdit()
+        guard let previous = undoSongs.popLast(), let current = song else { return }
+        redoSongs.append(current)
+        restoreHistory(previous)
+    }
+
+    public func redo() {
+        endEdit()
+        guard let next = redoSongs.popLast(), let current = song else { return }
+        undoSongs.append(current)
+        restoreHistory(next)
+    }
+
+    private func restoreHistory(_ restored: Song) {
+        audio.panic()
+        isRestoringHistory = true
+        song = restored
+        isRestoringHistory = false
+        try? rebuildPlayback(resetPosition: false)
+        refreshHistoryAvailability()
+        historyRevision += 1
+    }
     @Published public var selectedTrackID: Int?
     @Published public private(set) var errorMessage: String?
     @Published public private(set) var audioErrorMessage: String?
@@ -68,7 +129,14 @@ public final class PlaybackEngine: ObservableObject {
     public func load(data: Data, title: String = "") throws {
         stop()
         let loaded = try RCPDecoder.song(from: data)
+        isRestoringHistory = true
         song = loaded
+        isRestoringHistory = false
+        editStart = nil
+        undoSongs.removeAll()
+        redoSongs.removeAll()
+        refreshHistoryAvailability()
+        historyRevision += 1
         selectedTrackID = loaded.tracks.first?.id
         self.title = loaded.title.isEmpty ? title : loaded.title
         try rebuildPlayback(resetPosition: true)
