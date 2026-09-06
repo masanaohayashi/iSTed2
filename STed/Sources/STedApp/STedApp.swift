@@ -41,7 +41,7 @@ private struct TrackerFileCommands: Commands {
             }
             .keyboardShortcut("n", modifiers: .command)
         }
-        CommandGroup(after: .importExport) {
+        CommandGroup(after: .newItem) {
             Button("開く…") {
                 engine.requestFileOperation(.open)
             }
