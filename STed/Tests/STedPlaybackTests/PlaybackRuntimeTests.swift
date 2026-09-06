@@ -204,6 +204,7 @@ final class PlaybackRuntimeTests: XCTestCase {
             messages.append(bytes)
         }
         XCTAssertEqual(messages, [[0xc0, 12]])
+        XCTAssertEqual(runtime.snapshot().position, 1, accuracy: 1e-12)
         XCTAssertTrue(runtime.snapshot().playing)
 
         runtime.render(frameCount: 4_800, sampleRate: 48_000) { bytes, _ in
@@ -213,6 +214,7 @@ final class PlaybackRuntimeTests: XCTestCase {
             [0xc0, 12],
             [0x90, 60, 100]
         ])
+        XCTAssertEqual(runtime.snapshot().position, 1.02, accuracy: 1e-12)
         XCTAssertTrue(runtime.snapshot().finished)
     }
 

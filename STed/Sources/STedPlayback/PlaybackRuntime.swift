@@ -26,6 +26,12 @@ final class PlaybackRuntime: @unchecked Sendable {
     private var sequence: RCPSequence?
     private var activePlan: PlaybackPlan?
     private var pendingHandoff: PendingHandoff?
+    /// State restoration has its own clock. While it is active, `position`
+    /// remains at the requested musical start and the regular scheduler does
+    /// not advance.
+    private var catchupScheduler: EventScheduler?
+    private var catchupElapsedSeconds = 0.0
+    private var catchupDurationSeconds = 0.0
     private var planRevision = 0
     /// Changes whenever the active playback session is replaced or stopped.
     /// A handoff is prepared off the runtime lock, so this token prevents a
@@ -160,13 +166,26 @@ final class PlaybackRuntime: @unchecked Sendable {
             prefix = []
             prefixIntervalSeconds = 0
         }
-        scheduler?.jump(
-            to: position,
-            prefix: prefix,
-            timelineOffset: timelineOffset,
-            prefixIntervalSeconds: prefixIntervalSeconds,
-            prefixTailSeconds: PlaybackCatchupTiming.settleSeconds
-        )
+
+        // The musical scheduler starts at the requested position only after
+        // the separate catch-up scheduler has restored the instrument state.
+        scheduler?.jump(to: position, prefix: [], timelineOffset: timelineOffset)
+        catchupScheduler = nil
+        catchupElapsedSeconds = 0
+        catchupDurationSeconds = 0
+        if !prefix.isEmpty {
+            let catchup = EventScheduler(events: [])
+            catchup.jump(
+                to: 0,
+                prefix: prefix,
+                timelineOffset: 0,
+                prefixIntervalSeconds: prefixIntervalSeconds,
+                prefixTailSeconds: PlaybackCatchupTiming.settleSeconds
+            )
+            catchupScheduler = catchup
+            catchupDurationSeconds = prefixIntervalSeconds * Double(prefix.count)
+                + PlaybackCatchupTiming.settleSeconds
+        }
         playing = true
         finished = false
     }
@@ -187,6 +206,9 @@ final class PlaybackRuntime: @unchecked Sendable {
         timelineOffset = 0
         finished = false
         pendingHandoff = nil
+        catchupScheduler = nil
+        catchupElapsedSeconds = 0
+        catchupDurationSeconds = 0
         scheduler?.reset()
     }
 
@@ -216,11 +238,39 @@ final class PlaybackRuntime: @unchecked Sendable {
         pendingBytes.removeAll(keepingCapacity: true)
         pendingOffsets.removeAll(keepingCapacity: true)
 
-        let bufferStart = position
-        let bufferEnd = bufferStart + Double(frameCount) / sampleRate
-        var cursor = bufferStart
+        let bufferDuration = Double(frameCount) / sampleRate
+        var musicalDuration = bufferDuration
+        var catchupDuration = 0.0
+        if let catchupScheduler {
+            let catchupStart = catchupElapsedSeconds
+            let catchupEnd = min(
+                catchupDurationSeconds,
+                catchupStart + bufferDuration
+            )
+            catchupScheduler.advance(
+                to: catchupEnd,
+                bufferStart: catchupStart,
+                sampleRate: sampleRate,
+                send: append(bytes:offset:)
+            )
+            catchupDuration = max(0, catchupEnd - catchupStart)
+            catchupElapsedSeconds = catchupEnd
+            musicalDuration = max(0, bufferDuration - catchupDuration)
+            if catchupEnd + 1e-9 >= catchupDurationSeconds {
+                self.catchupScheduler = nil
+                self.catchupElapsedSeconds = 0
+                self.catchupDurationSeconds = 0
+            }
+        }
 
-        while cursor < bufferEnd {
+        // `position` is the musical clock. A prefix-only buffer consumes real
+        // audio time but leaves that clock untouched. If the prefix ends in
+        // this buffer, give the regular scheduler the remaining sample range.
+        let bufferStart = position - catchupDuration
+        let bufferEnd = position + musicalDuration
+        var cursor = position
+
+        while musicalDuration > 0, cursor < bufferEnd {
             guard let scheduler = self.scheduler else { break }
             if let pendingHandoff {
                 let boundary = pendingHandoff.boundaryWallSeconds
@@ -276,11 +326,11 @@ final class PlaybackRuntime: @unchecked Sendable {
         }
 
         position = bufferEnd
-        // A point-play catch-up may intentionally move musical events a little
-        // past the sequence's nominal end. Keep rendering until the scheduler
-        // has drained those delayed events instead of stopping in the middle
-        // of the state restore.
-        if position > songEnd, scheduler?.isFinished == true {
+        // Do not finish while a state restore is still consuming its own
+        // clock. The regular scheduler may already be empty at this point.
+        if position > songEnd,
+           catchupScheduler == nil,
+           scheduler?.isFinished == true {
             playing = false
             finished = true
         }
@@ -307,6 +357,9 @@ final class PlaybackRuntime: @unchecked Sendable {
         self.sequence = sequence
         activePlan = plan
         pendingHandoff = nil
+        catchupScheduler = nil
+        catchupElapsedSeconds = 0
+        catchupDurationSeconds = 0
         planRevision = plan?.revision ?? 0
         self.timelineOffset = timelineOffset
         self.songEnd = songEnd
@@ -394,6 +447,9 @@ final class PlaybackRuntime: @unchecked Sendable {
         planRevision = plan.revision
         timelineOffset = offset
         songEnd = plan.songEndSeconds + offset
+        catchupScheduler = nil
+        catchupElapsedSeconds = 0
+        catchupDurationSeconds = 0
         let handoffOffset = max(
             0,
             Int(((wallSeconds - bufferStart) * sampleRate).rounded(.down))
