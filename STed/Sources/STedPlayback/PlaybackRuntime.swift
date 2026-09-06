@@ -27,6 +27,10 @@ final class PlaybackRuntime: @unchecked Sendable {
     private var activePlan: PlaybackPlan?
     private var pendingHandoff: PendingHandoff?
     private var planRevision = 0
+    /// Changes whenever the active playback session is replaced or stopped.
+    /// A handoff is prepared off the runtime lock, so this token prevents a
+    /// stale preparation from being installed after a stop/load/restart.
+    private var playbackGeneration = 0
     /// Wall-clock seconds from the beginning of the current play operation.
     /// The active sequence may have a different origin after a live swap.
     private var timelineOffset = 0.0
@@ -75,17 +79,22 @@ final class PlaybackRuntime: @unchecked Sendable {
     /// latest plan wins and is applied at the next measure boundary.
     func queue(plan: PlaybackPlan) {
         lock.lock()
-        defer { lock.unlock() }
-
-        guard plan.revision > planRevision else { return }
+        guard plan.revision > planRevision else {
+            lock.unlock()
+            return
+        }
         guard playing, let activePlan, let sequence else {
             install(plan: plan, position: 0, timelineOffset: 0, playing: false)
+            lock.unlock()
             return
         }
 
         if let pendingHandoff, plan.revision <= pendingHandoff.plan.revision {
+            lock.unlock()
             return
         }
+
+        let generation = playbackGeneration
 
         let currentSequenceSeconds = max(0, position - timelineOffset)
         let currentTick = sequence.tick(atSeconds: currentSequenceSeconds)
@@ -111,11 +120,26 @@ final class PlaybackRuntime: @unchecked Sendable {
             boundaryTick = proposedBoundary
             boundaryWallSeconds = activePlan.sequence.seconds(atTick: proposedBoundary) + timelineOffset
         }
-        pendingHandoff = prepareHandoff(
+
+        // Compiling the handoff scans the edited event list to collect state
+        // messages. Do that without holding the same lock used by the audio
+        // callback; otherwise a large edit can stall a render deadline.
+        lock.unlock()
+        let handoff = prepareHandoff(
             plan: plan,
             boundaryTick: boundaryTick,
             boundaryWallSeconds: boundaryWallSeconds
         )
+
+        lock.lock()
+        defer { lock.unlock() }
+        guard playbackGeneration == generation,
+              playing,
+              plan.revision > planRevision else { return }
+        if let pendingHandoff, plan.revision <= pendingHandoff.plan.revision {
+            return
+        }
+        pendingHandoff = handoff
     }
 
     func play(from seconds: Double) {
@@ -146,6 +170,7 @@ final class PlaybackRuntime: @unchecked Sendable {
     func stop() {
         lock.lock()
         defer { lock.unlock() }
+        playbackGeneration &+= 1
         playing = false
         position = 0
         timelineOffset = 0
@@ -262,6 +287,7 @@ final class PlaybackRuntime: @unchecked Sendable {
         playing: Bool,
         songEnd: Double
     ) {
+        playbackGeneration &+= 1
         scheduler = EventScheduler(events: events)
         self.sequence = sequence
         activePlan = plan
@@ -299,27 +325,12 @@ final class PlaybackRuntime: @unchecked Sendable {
         sampleRate: Double
     ) {
         guard end >= start else { return }
-
-        let quantumFrames = max(1, Int((sampleRate * 0.001).rounded(.down)))
-        let quantumSeconds = Double(quantumFrames) / sampleRate
-        scheduler.advance(
-            to: start,
-            bufferStart: bufferStart,
-            sampleRate: sampleRate,
-            send: append(bytes:offset:)
-        )
-
-        var cursor = start + quantumSeconds
-        while cursor < end {
-            scheduler.advance(
-                to: cursor,
-                bufferStart: bufferStart,
-                sampleRate: sampleRate,
-                send: append(bytes:offset:)
-            )
-            cursor += quantumSeconds
-        }
-
+        // EventScheduler computes each event's sample offset relative to the
+        // complete audio buffer. Calling it once per segment is sufficient:
+        // it emits every event whose timestamp is <= `end`, and preserves
+        // the exact offset for each event. The old implementation woke the
+        // scheduler every millisecond, which added dozens of scans and array
+        // operations to every audio callback without improving timing.
         scheduler.advance(
             to: end,
             bufferStart: bufferStart,

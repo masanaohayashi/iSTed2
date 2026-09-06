@@ -146,6 +146,11 @@ struct TrackEditorView: View {
     @State private var toneEditor: InlineEditor?
     @State private var toneDraft = ""
     @State private var toneIndex = 0
+    @State private var cachedRows: [EventRow] = []
+    @State private var cachedRowsRevision = -1
+    @State private var cachedRowsTrackID: Int?
+    @State private var cachedFirstPlayableRow: Int?
+    @State private var lastChasedRow: Int?
 
     private var track: Track? {
         engine.song?.tracks.first { $0.id == trackID }
@@ -209,6 +214,7 @@ struct TrackEditorView: View {
         }
         .onAppear {
             engine.selectedTrackID = trackID
+            refreshRowsCache()
             resetInlineEditor()
             normalizeCursor()
             isKeyboardFocused = true
@@ -217,11 +223,15 @@ struct TrackEditorView: View {
             rowSelection = nil
             engine.endEdit()
             toneEditor = nil
+            refreshRowsCache()
             resetInlineEditor()
             normalizeCursor()
             isKeyboardFocused = true
         }
         .onDisappear { engine.endEdit() }
+        .onChange(of: engine.songRevision) { _, _ in
+            refreshRowsCache()
+        }
         .onChange(of: engine.historyRevision) { _, _ in clearHistoryEditors() }
         .focusedSceneValue(\.trackerHistory, TrackerHistoryActions(
             undo: { performHistory(redo: false) },
@@ -269,11 +279,7 @@ struct TrackEditorView: View {
     }
 
     private func editor(song: Song, track: Track) -> some View {
-        let rows = track.eventRows(
-            timeBase: song.timeBase,
-            beatNumerator: song.beatNumerator,
-            beatDenominator: song.beatDenominator
-        )
+        let rows = displayRows(for: track, song: song)
         return GeometryReader { geo in
             VStack(spacing: 0) {
                 header(track)
@@ -284,7 +290,7 @@ struct TrackEditorView: View {
                 columnHeader
                     .padding(.horizontal, 8)
 
-                trackerList(rows: rows)
+                trackerList(rows: rows, track: track)
                     #if os(iOS)
                     .frame(height: max(160, geo.size.height * 0.48))
                     #else
@@ -499,13 +505,21 @@ struct TrackEditorView: View {
             }
     }
 
-    private func trackerList(rows: [EventRow]) -> some View {
+    private func trackerList(rows: [EventRow], track: Track) -> some View {
         let playheadRow = playbackRow(in: rows)
+        let eventCount = rows.firstIndex(where: \.isTerminator) ?? rows.count
+        let selectedRange = rowSelection?.range(eventCount: eventCount) ?? 0..<0
         return ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(spacing: 0) {
-                    ForEach(Array(rows.enumerated()), id: \.offset) { index, row in
-                        trackerRow(index: index, row: row, isPlayhead: index == playheadRow)
+                    ForEach(rows.indices, id: \.self) { index in
+                        trackerRow(
+                            index: index,
+                            row: rows[index],
+                            track: track,
+                            isPlayhead: index == playheadRow,
+                            selectedRange: selectedRange
+                        )
                             .id(index)
                     }
                 }
@@ -524,6 +538,7 @@ struct TrackEditorView: View {
                 chasePlaybackRow(in: rows, using: proxy)
             }
             .onChange(of: engine.isChaseEnabled) { _, _ in
+                lastChasedRow = nil
                 chasePlaybackRow(in: rows, using: proxy)
             }
         }
@@ -531,20 +546,46 @@ struct TrackEditorView: View {
 
     private func playbackRow(in rows: [EventRow]) -> Int? {
         guard engine.state == .playing || engine.state == .paused else { return nil }
-        let playable = rows.indices.filter {
-            let row = rows[$0]
-            return !row.isTerminator && !row.isMeasureLine && !row.isComment
+        guard let first = firstPlayableRow(in: rows) else { return nil }
+
+        // Event rows are sorted by tick. Find the first row after the playhead
+        // with a binary search, then walk back over display-only rows.
+        let targetTick = engine.positionTick
+        var lower = 0
+        var upper = rows.count
+        while lower < upper {
+            let middle = (lower + upper) / 2
+            if rows[middle].time.tick <= targetTick {
+                lower = middle + 1
+            } else {
+                upper = middle
+            }
         }
-        guard let first = playable.first else { return nil }
-        return playable.last(where: { rows[$0].time.tick <= engine.positionTick }) ?? first
+        var candidate = min(lower - 1, rows.count - 1)
+        while candidate >= first {
+            let row = rows[candidate]
+            if !row.isTerminator && !row.isMeasureLine && !row.isComment {
+                return candidate
+            }
+            candidate -= 1
+        }
+        return first
     }
 
     private func chasePlaybackRow(in rows: [EventRow], using proxy: ScrollViewProxy) {
         guard engine.isChaseEnabled, let row = playbackRow(in: rows) else { return }
+        guard row != lastChasedRow else { return }
+        lastChasedRow = row
         proxy.scrollTo(row, anchor: .center)
     }
 
-    private func trackerRow(index: Int, row: EventRow, isPlayhead: Bool) -> some View {
+    private func trackerRow(
+        index: Int,
+        row: EventRow,
+        track: Track,
+        isPlayhead: Bool,
+        selectedRange: Range<Int>
+    ) -> some View {
         let isSelected = cursor.row == index
         let ink = TrackerPalette.ink(row.ink)
         return HStack(spacing: 0) {
@@ -558,8 +599,7 @@ struct TrackEditorView: View {
                 .foregroundStyle(TrackerPalette.paper)
             Text(":")
                 .foregroundStyle(TrackerPalette.paper)
-            if let track,
-               track.events.indices.contains(row.sourceRange.lowerBound),
+            if track.events.indices.contains(row.sourceRange.lowerBound),
                track.events[row.sourceRange.lowerBound].command == 0xfc {
                 Text("========")
                     .frame(width: TrackerLayout.width(8), alignment: .leading)
@@ -662,7 +702,7 @@ struct TrackEditorView: View {
         .padding(.horizontal, 4)
         .padding(.vertical, 3)
         .background {
-            if selectedRows.contains(index) {
+            if selectedRange.contains(index) {
                 TrackerPalette.cell.opacity(0.35)
             } else if isSelected {
                 TrackerPalette.playhead.opacity(0.85)
@@ -951,11 +991,55 @@ struct TrackEditorView: View {
 
     private func displayRows(for track: Track) -> [EventRow] {
         guard let song = engine.song else { return [] }
+        return displayRows(for: track, song: song)
+    }
+
+    private func displayRows(for track: Track, song: Song) -> [EventRow] {
+        if cachedRowsRevision == engine.songRevision,
+           cachedRowsTrackID == track.id {
+            return cachedRows
+        }
         return track.eventRows(
             timeBase: song.timeBase,
             beatNumerator: song.beatNumerator,
             beatDenominator: song.beatDenominator
         )
+    }
+
+    private func refreshRowsCache() {
+        guard let song = engine.song,
+              let track = song.tracks.first(where: { $0.id == trackID })
+        else {
+            cachedRows = []
+            cachedRowsRevision = engine.songRevision
+            cachedRowsTrackID = trackID
+            cachedFirstPlayableRow = nil
+            lastChasedRow = nil
+            return
+        }
+
+        let rows = track.eventRows(
+            timeBase: song.timeBase,
+            beatNumerator: song.beatNumerator,
+            beatDenominator: song.beatDenominator
+        )
+        cachedRows = rows
+        cachedRowsRevision = engine.songRevision
+        cachedRowsTrackID = track.id
+        cachedFirstPlayableRow = rows.firstIndex {
+            !$0.isTerminator && !$0.isMeasureLine && !$0.isComment
+        }
+        lastChasedRow = nil
+    }
+
+    private func firstPlayableRow(in rows: [EventRow]) -> Int? {
+        if cachedRowsRevision == engine.songRevision,
+           cachedRowsTrackID == trackID {
+            return cachedFirstPlayableRow
+        }
+        return rows.firstIndex {
+            !$0.isTerminator && !$0.isMeasureLine && !$0.isComment
+        }
     }
 
     private func sourceRange(forDisplayRow row: Int, in track: Track) -> Range<Int>? {
@@ -1400,12 +1484,8 @@ struct TrackEditorView: View {
     }
 
     private func normalizeCursor() {
-        guard let song = engine.song, let track else { return }
-        let rowCount = track.eventRows(
-            timeBase: song.timeBase,
-            beatNumerator: song.beatNumerator,
-            beatDenominator: song.beatDenominator
-        ).count
+        guard let track else { return }
+        let rowCount = displayRows(for: track).count
         cursor = TrackCursor(
             row: min(cursor.row, max(0, rowCount - 1)),
             column: cursor.column
@@ -1853,11 +1933,7 @@ struct TrackEditorView: View {
         resetInlineEditor()
         cursor = TrackCursor(row: row, column: .note)
         if let track {
-            let rowCount = track.eventRows(
-                timeBase: engine.song?.timeBase ?? 48,
-                beatNumerator: engine.song?.beatNumerator ?? 4,
-                beatDenominator: engine.song?.beatDenominator ?? 4
-            ).count
+            let rowCount = displayRows(for: track).count
             cursor.move(.down, rowCount: rowCount)
         }
         isKeyboardFocused = true
@@ -2131,12 +2207,8 @@ struct TrackEditorView: View {
     }
 
     private func cursorMeasure(_ track: Track) -> Int {
-        guard let song = engine.song else { return engine.positionTime.measure }
-        let rows = track.eventRows(
-            timeBase: song.timeBase,
-            beatNumerator: song.beatNumerator,
-            beatDenominator: song.beatDenominator
-        )
+        guard engine.song != nil else { return engine.positionTime.measure }
+        let rows = displayRows(for: track)
         if rows.indices.contains(cursor.row) {
             return rows[cursor.row].time.measure
         }

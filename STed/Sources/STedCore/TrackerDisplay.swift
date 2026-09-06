@@ -82,19 +82,19 @@ extension TrackEvent {
     }
 
     func trackerCells(nextEvents: ArraySlice<TrackEvent>) -> TrackerCells {
+        let comparisonStep = nextEvents.first {
+            $0.command < 0xf7 && $0.delay > 0
+        }.map { Int($0.delay) }
+        return trackerCells(comparisonStep: comparisonStep)
+    }
+
+    func trackerCells(comparisonStep: Int?) -> TrackerCells {
         if isTerminator {
             return TrackerCells(note: "End of Track", st: "", gt: "", vel: "")
         }
         if command < 0x80 {
             var gt = "\(param1)"
-            let comparisonStep: Int?
-            if delay > 0 {
-                comparisonStep = Int(delay)
-            } else {
-                comparisonStep = nextEvents.first {
-                    $0.command < 0xf7 && $0.delay > 0
-                }.map { Int($0.delay) }
-            }
+            let comparisonStep = delay > 0 ? Int(delay) : comparisonStep
             if let comparisonStep, param1 > comparisonStep {
                 gt += "*"
             }

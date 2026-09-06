@@ -12,13 +12,14 @@ extension Track {
     public var measureRanges: [Range<Int>] {
         var result: [Range<Int>] = []
         var start = 0
-        for index in 0..<terminatorIndex {
+        let end = terminatorIndex
+        for index in 0..<end {
             if events[index].command == 0xfd || events[index].command == 0xfc {
                 result.append(start..<(index + 1))
                 start = index + 1
             }
         }
-        if start < terminatorIndex { result.append(start..<terminatorIndex) }
+        if start < end { result.append(start..<end) }
         return result
     }
 
@@ -47,7 +48,8 @@ extension Track {
 
     public func expandedEvents(in range: Range<Int>) throws -> [TrackEvent] {
         var result: [TrackEvent] = []
-        for index in range where index >= 0 && index < terminatorIndex {
+        let end = terminatorIndex
+        for index in range where index >= 0 && index < end {
             if events[index].command == 0xfc {
                 guard let target = sameMeasureTarget(at: index),
                       let measure = measureRanges.first(where: { $0.lowerBound == target })

@@ -134,7 +134,7 @@ struct TrackListView: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text(track.memo.isEmpty ? "Track \(track.number)" : track.memo)
                     .lineLimit(1)
-                Text("ST+ \(track.startTick)  K#+ \(track.keyShift)  \(track.stepCount) step")
+                Text("ST+ \(track.startTick)  K#+ \(track.keyShift)  \(engine.stepCount(for: track.id)) step")
                     .font(.caption2.monospacedDigit())
                     .foregroundStyle(.secondary)
             }

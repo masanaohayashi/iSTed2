@@ -42,7 +42,12 @@ public final class PlaybackEngine: ObservableObject {
     private var savedSong: Song?
     @Published public private(set) var song: Song? {
         didSet {
-            if !isRestoringHistory, oldValue != song {
+            let didChange = oldValue != song
+            if didChange {
+                songRevision &+= 1
+                refreshTrackStepCounts()
+            }
+            if !isRestoringHistory, didChange {
                 if editStart == nil, let oldValue {
                     undoSongs.append(oldValue)
                     if undoSongs.count > 100 { undoSongs.removeFirst() }
@@ -56,10 +61,14 @@ public final class PlaybackEngine: ObservableObject {
     @Published public private(set) var canUndo = false
     @Published public private(set) var canRedo = false
     @Published public private(set) var historyRevision = 0
+    /// Increments whenever the editor snapshot changes. Views use this as a
+    /// cheap invalidation key for cached, derived tracker rows.
+    @Published public private(set) var songRevision = 0
     private var undoSongs: [Song] = []
     private var redoSongs: [Song] = []
     private var editStart: Song?
     private var isRestoringHistory = false
+    private var trackStepCounts: [Int: Int] = [:]
 
     public func beginEdit() {
         endEdit()
@@ -89,6 +98,18 @@ public final class PlaybackEngine: ObservableObject {
 
     private func refreshDirtyState() {
         isDirty = song != savedSong
+    }
+
+    private func refreshTrackStepCounts() {
+        trackStepCounts = Dictionary(
+            uniqueKeysWithValues: (song?.tracks ?? []).map { ($0.id, $0.stepCount) }
+        )
+    }
+
+    public func stepCount(for trackID: Int) -> Int {
+        trackStepCounts[trackID]
+            ?? song?.tracks.first(where: { $0.id == trackID })?.stepCount
+            ?? 0
     }
 
     public func undo() {
@@ -609,7 +630,10 @@ public final class PlaybackEngine: ObservableObject {
             }
             guard !Task.isCancelled else { return }
 
-            let result = await Task.detached(priority: .userInitiated) {
+            // Playback compilation is deliberately lower priority than the
+            // audio render thread. A large edit should update the next bar,
+            // but it must not compete with the real-time callback for CPU.
+            let result = await Task.detached(priority: .utility) {
                 compilePlaybackSequence(source)
             }.value
 

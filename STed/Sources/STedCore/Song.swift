@@ -119,7 +119,15 @@ public struct Track: Equatable, Identifiable, Sendable {
     }
 
     public var stepCount: Int {
-        let played = (try? expandedEvents(in: 0..<terminatorIndex)) ?? events
+        let end = terminatorIndex
+        let played: ArraySlice<TrackEvent>
+        if events[..<end].contains(where: { $0.command == 0xfc }) {
+            played = (try? expandedEvents(in: 0..<end))?[...] ?? events[...]
+        } else {
+            // Most tracks have no SAME MEAS records. Avoid materializing a
+            // second event array just to count their timed steps.
+            played = events[..<end]
+        }
         return played.reduce(0) { total, event in
             event.command < 0xf5 ? total + Int(event.delay) : total
         }
@@ -138,6 +146,15 @@ public struct Track: Equatable, Identifiable, Sendable {
         var previousDelay: UInt8 = 1
         var appendedTerminator = false
         var eventIndex = 0
+        var nextPositiveDelay = Array<Int?>(repeating: nil, count: events.count)
+        var positiveDelay: Int?
+        for index in stride(from: events.count - 1, through: 0, by: -1) {
+            nextPositiveDelay[index] = positiveDelay
+            let event = events[index]
+            if event.command < 0xf7, event.delay > 0 {
+                positiveDelay = Int(event.delay)
+            }
+        }
         while eventIndex < events.count {
             let event = events[eventIndex]
             let time = MusicalTime(
@@ -218,7 +235,7 @@ public struct Track: Equatable, Identifiable, Sendable {
             if isNoteLike && !isChord {
                 stepInMeasure += 1
             }
-            let cells = event.trackerCells(nextEvents: events.dropFirst(eventIndex + 1))
+            let cells = event.trackerCells(comparisonStep: nextPositiveDelay[eventIndex])
             let isMeasureLine = event.command == 0xfd
             rows.append(
                 EventRow(

@@ -36,10 +36,12 @@ public final class EventScheduler: @unchecked Sendable {
         emitPrefix { bytes in
             send(bytes, AUEventSampleTime(0))
         }
-        while nextIndex < events.count && translatedSeconds(for: events[nextIndex]) <= seconds {
+        while nextIndex < events.count {
+            let eventSeconds = translatedSeconds(for: events[nextIndex])
+            guard eventSeconds <= seconds else { break }
             let offset = max(
                 0,
-                Int(((translatedSeconds(for: events[nextIndex]) - bufferStart) * sampleRate).rounded(.down))
+                Int(((eventSeconds - bufferStart) * sampleRate).rounded(.down))
             )
             send(events[nextIndex].bytes, AUEventSampleTime(offset))
             nextIndex += 1
