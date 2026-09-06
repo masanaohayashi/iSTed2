@@ -36,6 +36,9 @@ public final class PlaybackEngine: ObservableObject {
     @Published public private(set) var currentFileURL: URL?
     @Published public private(set) var requestedFileOperation: FileOperation?
     @Published public private(set) var isDirty = false
+    /// When enabled, track editors follow the current playback position.
+    /// This belongs to the playback engine so every track shares one mode.
+    @Published public private(set) var isChaseEnabled = false
     private var savedSong: Song?
     @Published public private(set) var song: Song? {
         didSet {
@@ -167,6 +170,10 @@ public final class PlaybackEngine: ObservableObject {
 
     public func requestFileOperation(_ operation: FileOperation) {
         requestedFileOperation = operation
+    }
+
+    public func toggleChase() {
+        isChaseEnabled.toggle()
     }
 
     public func consumeFileOperation() {

@@ -347,6 +347,10 @@ struct TrackEditorView: View {
             return .handled
         }
         .onKeyPress(.space, phases: .down) { _ in
+            if engine.state == .playing {
+                engine.stop()
+                return .handled
+            }
             if toneEditor != nil { return .handled }
             if isSpecialSelectorPresented {
                 dismissSpecialSelector()
@@ -433,8 +437,22 @@ struct TrackEditorView: View {
             .font(.system(size: TrackerLayout.headerFontSize, weight: .medium, design: .monospaced))
             .foregroundStyle(TrackerPalette.phosphor)
 
-            TransportBar(compact: true, playMeasure: cursorMeasure(track))
-                .tint(TrackerPalette.phosphor)
+            HStack(spacing: 8) {
+                TransportBar(compact: true, playMeasure: cursorMeasure(track))
+                    .tint(TrackerPalette.phosphor)
+                Button {
+                    engine.toggleChase()
+                } label: {
+                    Text(engine.isChaseEnabled ? "Chase ON" : "Chase OFF")
+                        .font(.system(size: TrackerLayout.headerFontSize, weight: .bold, design: .monospaced))
+                        .frame(minWidth: 104)
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .tint(engine.isChaseEnabled ? TrackerPalette.cell : TrackerPalette.dim)
+                .accessibilityLabel("Chase 自動スクロール")
+                .accessibilityValue(engine.isChaseEnabled ? "オン" : "オフ")
+            }
         }
     }
 
@@ -482,9 +500,7 @@ struct TrackEditorView: View {
     }
 
     private func trackerList(rows: [EventRow]) -> some View {
-        let playheadRow = engine.state == .playing || engine.state == .paused
-            ? rows.lastIndex(where: { !$0.isTerminator && !$0.isMeasureLine && $0.time.tick <= engine.positionTick })
-            : nil
+        let playheadRow = playbackRow(in: rows)
         return ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(spacing: 0) {
@@ -495,10 +511,37 @@ struct TrackEditorView: View {
                 }
             }
             .background(TrackerPalette.crt)
+            .onAppear {
+                chasePlaybackRow(in: rows, using: proxy)
+            }
             .onChange(of: cursor.row) { _, row in
                 proxy.scrollTo(row, anchor: .center)
             }
+            .onChange(of: engine.positionSeconds) { _, _ in
+                chasePlaybackRow(in: rows, using: proxy)
+            }
+            .onChange(of: engine.state) { _, _ in
+                chasePlaybackRow(in: rows, using: proxy)
+            }
+            .onChange(of: engine.isChaseEnabled) { _, _ in
+                chasePlaybackRow(in: rows, using: proxy)
+            }
         }
+    }
+
+    private func playbackRow(in rows: [EventRow]) -> Int? {
+        guard engine.state == .playing || engine.state == .paused else { return nil }
+        let playable = rows.indices.filter {
+            let row = rows[$0]
+            return !row.isTerminator && !row.isMeasureLine && !row.isComment
+        }
+        guard let first = playable.first else { return nil }
+        return playable.last(where: { rows[$0].time.tick <= engine.positionTick }) ?? first
+    }
+
+    private func chasePlaybackRow(in rows: [EventRow], using proxy: ScrollViewProxy) {
+        guard engine.isChaseEnabled, let row = playbackRow(in: rows) else { return }
+        proxy.scrollTo(row, anchor: .center)
     }
 
     private func trackerRow(index: Int, row: EventRow, isPlayhead: Bool) -> some View {
@@ -1852,6 +1895,10 @@ struct TrackEditorView: View {
     }
 
     private func handleSpecialSelectorKey(_ press: KeyPress) -> KeyPress.Result {
+        if press.key == .space, engine.state == .playing {
+            engine.stop()
+            return .handled
+        }
         switch press.key {
         case .escape:
             dismissSpecialSelector()
@@ -1986,6 +2033,10 @@ struct TrackEditorView: View {
         .focusEffectDisabled()
         .onAppear { isToneSelectorFocused = true }
         .onKeyPress(phases: [.down, .repeat]) { press in
+            if press.key == .space, engine.state == .playing {
+                engine.stop()
+                return .handled
+            }
             if press.modifiers.contains(.command) { return .ignored }
             switch press.key {
             case .upArrow: toneIndex = ProgramToneList.moved(toneIndex, by: -1)
