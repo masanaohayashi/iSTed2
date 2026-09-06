@@ -159,7 +159,7 @@ extension TrackEvent {
         case 0xf9:
             return TrackerCells(note: "REP[", st: "\(delay)", gt: "", vel: "")
         case 0xfc:
-            return TrackerCells(note: "=========", st: "", gt: "", vel: "")
+            return TrackerCells(note: "=========", st: "\(Int(delay) + Int(param1 & 3) * 256 + 1)", gt: "", vel: "")
         case 0xfd:
             return TrackerCells(note: "----------", st: "", gt: "----", vel: "")
         default:

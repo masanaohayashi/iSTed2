@@ -49,6 +49,12 @@ public final class PlaybackEngine: ObservableObject {
         refreshHistoryAvailability()
     }
 
+    public func cancelEdit() {
+        guard let original = editStart else { return }
+        editStart = nil
+        restoreHistory(original)
+    }
+
     private func refreshHistoryAvailability() {
         canUndo = !undoSongs.isEmpty || (editStart != nil && editStart != song)
         canRedo = !redoSongs.isEmpty && (editStart == nil || editStart == song)
@@ -250,6 +256,34 @@ public final class PlaybackEngine: ObservableObject {
     }
 
     public var canAddTrack: Bool { (song?.tracks.count ?? 36) < 36 }
+
+    @discardableResult
+    public func insertSameMeasure(trackID: Int, at row: Int, referringTo measure: Int) -> Bool {
+        editSameMeasures(trackID: trackID) { try $0.insertSameMeasure(at: row, referringTo: measure) }
+    }
+
+    @discardableResult
+    public func expandSameMeasures(trackID: Int, in range: Range<Int>) -> Bool {
+        editSameMeasures(trackID: trackID) { try $0.expandSameMeasures(in: range) }
+    }
+
+    @discardableResult
+    public func compressSameMeasures(trackID: Int) -> Bool {
+        editSameMeasures(trackID: trackID) { try $0.compressSameMeasures() }
+    }
+
+    private func editSameMeasures(trackID: Int, edit: (inout Track) throws -> Void) -> Bool {
+        guard var edited = song, let index = edited.tracks.firstIndex(where: { $0.id == trackID }) else { return false }
+        do {
+            try edit(&edited.tracks[index])
+            song = edited
+            try rebuildPlayback(resetPosition: false)
+            return true
+        } catch {
+            reportError(error)
+            return false
+        }
+    }
 
     @discardableResult
     public func addTrack(copying sourceID: Int? = nil) -> Int? {

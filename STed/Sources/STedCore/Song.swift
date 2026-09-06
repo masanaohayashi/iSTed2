@@ -113,7 +113,8 @@ public struct Track: Equatable, Identifiable, Sendable {
     }
 
     public var stepCount: Int {
-        events.reduce(0) { total, event in
+        let played = (try? expandedEvents(in: 0..<terminatorIndex)) ?? events
+        return played.reduce(0) { total, event in
             event.command < 0xf5 ? total + Int(event.delay) : total
         }
     }
@@ -198,7 +199,9 @@ public struct Track: Equatable, Identifiable, Sendable {
             )
             previousCommand = event.command
             previousDelay = event.delay
-            if event.command < 0xf5 {
+            if event.command == 0xfc, let expanded = try? expandedEvents(in: eventIndex..<(eventIndex + 1)) {
+                tick += expanded.filter { $0.command < 0xf5 }.reduce(0) { $0 + Int($1.delay) }
+            } else if event.command < 0xf5 {
                 tick += Int(event.delay)
             }
         }
@@ -235,8 +238,7 @@ public struct Track: Equatable, Identifiable, Sendable {
 
     public mutating func insertEvent(_ event: TrackEvent = .defaultNote, at index: Int) {
         let clamped = min(max(0, index), terminatorIndex)
-        events.insert(event, at: clamped)
-        ensureTerminator()
+        replaceEvents(in: clamped..<clamped, with: [event])
     }
 
     public mutating func insertMeasureLine(at index: Int) {
@@ -246,8 +248,7 @@ public struct Track: Equatable, Identifiable, Sendable {
     public mutating func replaceEvents(in range: Range<Int>, with replacement: [TrackEvent]) {
         let lower = min(max(0, range.lowerBound), terminatorIndex)
         let upper = min(max(lower, range.upperBound), terminatorIndex)
-        events.replaceSubrange(lower..<upper, with: replacement.filter { !$0.isTerminator })
-        ensureTerminator()
+        replacePreservingReferences(in: lower..<upper, with: replacement)
     }
 
     public mutating func insertSpecialControllerPlaceholder(at index: Int) {
@@ -310,16 +311,14 @@ public struct Track: Equatable, Identifiable, Sendable {
             .reversed()
             .first(where: { $0.command < 0x80 })
         let event = previousNote ?? .defaultInsertedNote
-        events.insert(event, at: clamped)
-        ensureTerminator()
+        replaceEvents(in: clamped..<clamped, with: [event])
         return event
     }
 
     public mutating func deleteEvent(at index: Int) {
         let end = terminatorIndex
         guard end > 0, index >= 0, index < end else { return }
-        events.remove(at: index)
-        ensureTerminator()
+        replaceEvents(in: index..<(index + 1), with: [])
     }
 
     public mutating func updateAttributes(

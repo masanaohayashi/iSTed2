@@ -4,6 +4,26 @@ import STedCore
 
 final class EditHistoryTests: XCTestCase {
     @MainActor
+    func testSameMeasureCreationAndSourceDeletionAreUndoable() async throws {
+        let engine = PlaybackEngine()
+        try engine.loadDemo()
+        let id = try XCTUnwrap(engine.song?.tracks.first?.id)
+        let end = try XCTUnwrap(engine.song?.tracks.first?.terminatorIndex)
+        engine.insertEvent(trackID: id, at: end, .measureLine)
+        let before = engine.song
+        XCTAssertTrue(engine.insertSameMeasure(trackID: id, at: end + 1, referringTo: 1))
+        let referenced = engine.song
+        engine.undo()
+        XCTAssertEqual(engine.song, before)
+        engine.redo()
+        XCTAssertEqual(engine.song, referenced)
+        engine.replaceEvents(trackID: id, in: 0..<(end + 1), with: [])
+        XCTAssertFalse(engine.song!.tracks[0].events.contains { $0.command == 0xfc })
+        engine.undo()
+        XCTAssertEqual(engine.song, referenced)
+    }
+
+    @MainActor
     func testRangeReplacementIsOneUndoStep() async throws {
         let engine = PlaybackEngine()
         try engine.loadDemo()
@@ -103,4 +123,30 @@ final class EditHistoryTests: XCTestCase {
         engine.undo()
         XCTAssertEqual(engine.song?.tracks[0].memo, before.tracks[0].memo)
     }
+    @MainActor
+    func testInlineSameMeasureIsOneUndoAndCancelPreservesRedo() async throws {
+        let engine = PlaybackEngine()
+        try engine.loadDemo()
+        let before = try XCTUnwrap(engine.song)
+        let track = before.tracks[0]
+        engine.beginEdit()
+        XCTAssertTrue(engine.insertSameMeasure(trackID: track.id, at: track.terminatorIndex, referringTo: 1))
+        let row = try XCTUnwrap(engine.song?.tracks[0].events.firstIndex { $0.command == 0xfc })
+        XCTAssertFalse(engine.insertSameMeasure(trackID: track.id, at: row, referringTo: 1024))
+        XCTAssertTrue(engine.insertSameMeasure(trackID: track.id, at: row, referringTo: 1))
+        engine.endEdit()
+        let after = engine.song
+        engine.undo()
+        XCTAssertEqual(engine.song, before)
+        XCTAssertFalse(engine.canUndo)
+        engine.beginEdit()
+        XCTAssertTrue(engine.insertSameMeasure(trackID: track.id, at: track.terminatorIndex, referringTo: 1))
+        engine.cancelEdit()
+        XCTAssertEqual(engine.song, before)
+        XCTAssertFalse(engine.canUndo)
+        XCTAssertTrue(engine.canRedo)
+        engine.redo()
+        XCTAssertEqual(engine.song, after)
+    }
+
 }
