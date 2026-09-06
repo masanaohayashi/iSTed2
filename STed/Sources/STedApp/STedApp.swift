@@ -32,6 +32,11 @@ struct TrackerHistoryActions {
     var undo: () -> Void
     var redo: () -> Void
     var hasDraft: Bool
+    var copy: () -> Void
+    var cut: () -> Void
+    var paste: () -> Void
+    var hasSelection: Bool
+    var canPaste: Bool
 }
 private struct TrackerHistoryKey: FocusedValueKey {
     typealias Value = TrackerHistoryActions
@@ -46,6 +51,17 @@ private struct TrackerHistoryCommands: Commands {
     @ObservedObject var engine: PlaybackEngine
     @FocusedValue(\.trackerHistory) private var actions
     var body: some Commands {
+        CommandGroup(replacing: .pasteboard) {
+            Button("Cut") { actions?.cut() }
+                .keyboardShortcut("x", modifiers: .command)
+                .disabled(actions?.hasSelection != true)
+            Button("Copy") { actions?.copy() }
+                .keyboardShortcut("c", modifiers: .command)
+                .disabled(actions?.hasSelection != true)
+            Button("Paste") { actions?.paste() }
+                .keyboardShortcut("v", modifiers: .command)
+                .disabled(actions?.canPaste != true)
+        }
         CommandGroup(replacing: .undoRedo) {
             Button("Undo") {
                 if let actions { actions.undo() } else { engine.undo() }

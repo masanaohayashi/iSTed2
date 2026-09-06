@@ -129,7 +129,10 @@ private func expandPlayback(_ document: RcpDocument) throws -> RCPSequence {
         beatDenominator: document.beatDenominator,
         songEndSeconds: songEnd,
         lastBarSeconds: lastBar,
-        events: events
+        events: events,
+        tempoSegments: timeline.segments.map {
+            PlaybackTempoSegment(tick: Int($0.startTick), seconds: $0.startSeconds, bpm: $0.bpm)
+        }
     )
 }
 

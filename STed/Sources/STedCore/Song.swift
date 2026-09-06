@@ -243,6 +243,13 @@ public struct Track: Equatable, Identifiable, Sendable {
         insertEvent(.measureLine, at: index)
     }
 
+    public mutating func replaceEvents(in range: Range<Int>, with replacement: [TrackEvent]) {
+        let lower = min(max(0, range.lowerBound), terminatorIndex)
+        let upper = min(max(lower, range.upperBound), terminatorIndex)
+        events.replaceSubrange(lower..<upper, with: replacement.filter { !$0.isTerminator })
+        ensureTerminator()
+    }
+
     public mutating func insertSpecialControllerPlaceholder(at index: Int) {
         insertEvent(.specialControllerPlaceholder, at: index)
     }
@@ -383,7 +390,10 @@ public struct Song: Equatable, Sendable {
     }
 
     public func seconds(atTick tick: Int) -> Double {
-        Double(max(0, tick)) * 60.0 / (Double(max(1, tempoBPM)) * Double(max(1, timeBase)))
+        if let sequence = try? playbackSequence() {
+            return sequence.seconds(atTick: tick)
+        }
+        return Double(max(0, tick)) * 60.0 / (Double(max(1, tempoBPM)) * Double(max(1, timeBase)))
     }
 }
 

@@ -8,6 +8,8 @@ struct TrackListView: View {
     var opensEditorInStack: Bool
     @Binding var isSettingsPresented: Bool
 
+    @State private var isSongSettingsPresented = false
+    @State private var trackToEdit: Track?
     @State private var isImporterPresented = false
     @State private var isExporterPresented = false
     @State private var exportDocument = RCPFileDocument()
@@ -30,6 +32,14 @@ struct TrackListView: View {
             }
 
             Section("トラック") {
+                if engine.song != nil {
+                    Button {
+                        if let id = engine.addTrack() {
+                            trackToEdit = engine.song?.tracks.first { $0.id == id }
+                        }
+                    } label: { Label("トラック追加", systemImage: "plus") }
+                    .disabled(!engine.canAddTrack)
+                }
                 if let tracks = engine.song?.tracks, !tracks.isEmpty {
                     ForEach(tracks) { track in
                         trackRow(track)
@@ -57,6 +67,18 @@ struct TrackListView: View {
             }
             ToolbarItem(placement: .automatic) {
                 Button("Demo") { loadDemo() }
+            }
+        }
+        .sheet(isPresented: $isSongSettingsPresented) {
+            if let song = engine.song {
+                SongSettingsView(song: song) { title, tempo, numerator, denominator in
+                    engine.updateSongSettings(title: title, tempoBPM: tempo, numerator: numerator, denominator: denominator)
+                }
+            }
+        }
+        .sheet(item: $trackToEdit) { track in
+            TrackSettingsView(track: track) { channel, start, shift, name in
+                engine.updateTrack(trackID: track.id, midiChannel: channel, startTick: start, keyShift: shift, memo: name)
             }
         }
         .fileExporter(
@@ -93,7 +115,10 @@ struct TrackListView: View {
             if let song = engine.song {
                 VStack(alignment: .leading, spacing: 4) {
                     HStack {
-                        labeled("TEMPO", "\(song.tempoBPM)")
+                        Button { isSongSettingsPresented = true } label: {
+                            labeled("TEMPO", "\(song.tempoBPM)")
+                        }
+                        .buttonStyle(.plain)
                         labeled("TBASE", "\(song.timeBase)")
                         labeled("BEAT", "\(song.beatNumerator)/\(song.beatDenominator)")
                     }
@@ -105,6 +130,8 @@ struct TrackListView: View {
                     }
                 }
                 .font(.caption.monospacedDigit())
+                Button("曲設定…") { isSongSettingsPresented = true }
+                    .buttonStyle(.borderless)
                 ProgressView(
                     value: engine.songEndSeconds == 0
                         ? 0
@@ -139,6 +166,16 @@ struct TrackListView: View {
                     .foregroundStyle(.secondary)
             }
             Spacer(minLength: 0)
+            Menu {
+                Button("トラック設定…") { trackToEdit = track }
+                Button("複製") { _ = engine.addTrack(copying: track.id) }
+                    .disabled(!engine.canAddTrack)
+                Button("トラック削除", role: .destructive) { engine.deleteTrack(id: track.id) }
+                    .disabled((engine.song?.tracks.count ?? 0) <= 1)
+            } label: { Image(systemName: "ellipsis.circle") }
+            .menuStyle(.borderlessButton)
+            .fixedSize()
+            .accessibilityLabel("トラック \(track.number) の操作")
         }
         .contentShape(Rectangle())
 
@@ -198,5 +235,53 @@ struct TrackListView: View {
         } catch {
             engine.reportError(error)
         }
+    }
+}
+
+private struct SongSettingsView: View {
+    @State private var title: String
+    @State private var tempo: Int
+    @State private var numerator: Int
+    @State private var denominator: Int
+    @Environment(\.dismiss) private var dismiss
+    var onSave: (String, Int, Int, Int) -> Void
+
+    init(song: Song, onSave: @escaping (String, Int, Int, Int) -> Void) {
+        _title = State(initialValue: song.title)
+        _tempo = State(initialValue: song.tempoBPM)
+        _numerator = State(initialValue: song.beatNumerator)
+        _denominator = State(initialValue: song.beatDenominator)
+        self.onSave = onSave
+    }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                TextField("曲名", text: $title)
+                TextField("テンポ（BPM）", value: $tempo, format: .number)
+                Stepper("テンポ: \(tempo) BPM", value: $tempo, in: 1...255)
+                Stepper("拍子の分子: \(numerator)", value: $numerator, in: 1...32)
+                Picker("拍子の分母", selection: $denominator) {
+                    ForEach([1, 2, 4, 8, 16, 32], id: \.self) { Text("\($0)").tag($0) }
+                }
+            }
+            .formStyle(.grouped)
+            .navigationTitle("曲設定")
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("キャンセル") { dismiss() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("適用") {
+                        onSave(title, tempo, numerator, denominator)
+                        dismiss()
+                    }
+                    .disabled(!(1...255).contains(tempo))
+                }
+            }
+        }
+        #if os(macOS)
+        .frame(minWidth: 420, minHeight: 360)
+        #endif
     }
 }

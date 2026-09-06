@@ -4,6 +4,21 @@ import STedCore
 
 final class EditHistoryTests: XCTestCase {
     @MainActor
+    func testRangeReplacementIsOneUndoStep() async throws {
+        let engine = PlaybackEngine()
+        try engine.loadDemo()
+        let before = try XCTUnwrap(engine.song)
+        let id = before.tracks[0].id
+        engine.replaceEvents(trackID: id, in: 0..<2, with: [.measureLine])
+        let after = engine.song
+        engine.undo()
+        XCTAssertEqual(engine.song, before)
+        XCTAssertFalse(engine.canUndo)
+        engine.redo()
+        XCTAssertEqual(engine.song, after)
+    }
+
+    @MainActor
     func testEditsUndoRedoAndBranch() async throws {
         let engine = PlaybackEngine()
         try engine.loadDemo()

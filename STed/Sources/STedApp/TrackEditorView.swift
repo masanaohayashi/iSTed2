@@ -73,7 +73,7 @@ private enum TrackerLayout {
         NSFont.monospacedSystemFont(ofSize: size, weight: .medium).maximumAdvancement.width
         #else
         let font = UIFont.monospacedSystemFont(ofSize: size, weight: .medium)
-        ("0" as NSString).size(withAttributes: [.font: font]).width
+        return ("0" as NSString).size(withAttributes: [.font: font]).width
         #endif
     }
 
@@ -129,6 +129,7 @@ struct TrackEditorView: View {
     @EnvironmentObject private var engine: PlaybackEngine
     let trackID: Int
     @State private var cursor = TrackCursor()
+    @State private var rowSelection: TrackerRowSelection?
     @State private var inlineEditor: InlineEditor?
     @State private var inlineText = ""
     @State private var inlineEditorSessionID = 0
@@ -195,6 +196,7 @@ struct TrackEditorView: View {
             isKeyboardFocused = true
         }
         .onChange(of: trackID) { _, _ in
+            rowSelection = nil
             engine.endEdit()
             toneEditor = nil
             resetInlineEditor()
@@ -206,11 +208,16 @@ struct TrackEditorView: View {
         .focusedSceneValue(\.trackerHistory, TrackerHistoryActions(
             undo: { performHistory(redo: false) },
             redo: { performHistory(redo: true) },
-            hasDraft: inlineEditor != nil || toneEditor != nil
+            hasDraft: inlineEditor != nil || toneEditor != nil,
+            copy: { copyRows() }, cut: { copyRows(cutting: true) }, paste: { pasteRows() },
+            hasSelection: !selectedRows.isEmpty,
+            canPaste: inlineEditor == nil && toneEditor == nil && !isSpecialSelectorPresented
+
         ))
     }
 
     private func clearHistoryEditors() {
+        rowSelection = nil
         toneEditor = nil
         isToneSelectorFocused = false
         specialInsert = nil
@@ -283,7 +290,7 @@ struct TrackEditorView: View {
         .focused($isKeyboardFocused)
         .focusEffectDisabled()
         .onKeyPress(keys: TrackerKeyBindings.directionalKeys, phases: [.down, .repeat]) { press in
-            return handleCursorKey(for: press.key, rowCount: rows.count)
+            return handleDirectionalPress(press, rowCount: rows.count)
         }
         .onKeyPress(keys: TrackerKeyBindings.pageKeys, phases: [.down, .repeat]) { press in
             switch press.key {
@@ -364,6 +371,10 @@ struct TrackEditorView: View {
                 return result
             }
             guard inlineEditor == nil else { return .ignored }
+            if press.key == .escape, rowSelection != nil {
+                rowSelection = nil
+                return .handled
+            }
             if let digit = keyboardDigit(from: press) {
                 return beginNumericEdit(String(digit)) ? .handled : .ignored
             }
@@ -448,11 +459,14 @@ struct TrackEditorView: View {
     }
 
     private func trackerList(rows: [EventRow]) -> some View {
-        ScrollViewReader { proxy in
+        let playheadRow = engine.state == .playing || engine.state == .paused
+            ? rows.lastIndex(where: { !$0.isTerminator && !$0.isMeasureLine && $0.time.tick <= engine.positionTick })
+            : nil
+        return ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(spacing: 0) {
                     ForEach(Array(rows.enumerated()), id: \.offset) { index, row in
-                        trackerRow(index: index, row: row)
+                        trackerRow(index: index, row: row, isPlayhead: index == playheadRow)
                             .id(index)
                     }
                 }
@@ -464,9 +478,8 @@ struct TrackEditorView: View {
         }
     }
 
-    private func trackerRow(index: Int, row: EventRow) -> some View {
+    private func trackerRow(index: Int, row: EventRow, isPlayhead: Bool) -> some View {
         let isSelected = cursor.row == index
-        let isPlayhead = row.time.tick <= engine.positionTick
         let ink = TrackerPalette.ink(row.ink)
         return HStack(spacing: 0) {
             Text(row.showsMeasure ? String(format: "%5d", row.time.measure) : "")
@@ -533,7 +546,9 @@ struct TrackEditorView: View {
         .padding(.horizontal, 4)
         .padding(.vertical, 3)
         .background {
-            if isSelected {
+            if selectedRows.contains(index) {
+                TrackerPalette.cell.opacity(0.35)
+            } else if isSelected {
                 TrackerPalette.playhead.opacity(0.85)
             } else if isPlayhead {
                 TrackerPalette.playhead.opacity(0.35)
@@ -543,6 +558,7 @@ struct TrackEditorView: View {
         }
         .contentShape(Rectangle())
         .onTapGesture {
+            rowSelection = nil
             if inlineEditor != nil {
                 moveCursorToCell(row: index, column: cursor.column)
             } else {
@@ -701,6 +717,10 @@ struct TrackEditorView: View {
     }
 
     private func deleteEvent() {
+        if !selectedRows.isEmpty {
+            replaceSelectedRows(with: [])
+            return
+        }
         guard let track, cursor.row < track.terminatorIndex else { return }
         resetInlineEditor()
         let index = cursor.row
@@ -743,6 +763,68 @@ struct TrackEditorView: View {
         default:
             return TrackerEditorKey(characters: press.characters)
         }
+    }
+
+    private var selectedRows: Range<Int> {
+        rowSelection?.range(eventCount: track?.terminatorIndex ?? 0) ?? 0..<0
+    }
+
+    private func handleDirectionalPress(_ press: KeyPress, rowCount: Int) -> KeyPress.Result {
+        if press.modifiers.contains(.shift),
+           press.key == .upArrow || press.key == .downArrow,
+           toneEditor == nil, !isSpecialSelectorPresented {
+            if inlineEditor != nil {
+                if inlineEditor?.origin == .insertedSpecial {
+                    return handleCursorKey(for: press.key, rowCount: rowCount)
+                }
+                commitInlineEditor()
+                engine.endEdit()
+            }
+            if rowSelection == nil { rowSelection = TrackerRowSelection(anchor: cursor.row) }
+            cursor.move(press.key == .upArrow ? .up : .down, rowCount: rowCount)
+            rowSelection?.move(to: cursor.row)
+            isKeyboardFocused = true
+            return .handled
+        }
+        rowSelection = nil
+        return handleCursorKey(for: press.key, rowCount: rowCount)
+    }
+
+    private func copyRows(cutting: Bool = false) {
+        guard let track, !selectedRows.isEmpty else { return }
+        let events = Array(track.events[selectedRows])
+        let data = TrackEventClipboard.encode(events)
+        #if os(macOS)
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setData(data, forType: NSPasteboard.PasteboardType(TrackEventClipboard.typeIdentifier))
+        #else
+        UIPasteboard.general.setData(data, forPasteboardType: TrackEventClipboard.typeIdentifier)
+        #endif
+        if cutting { replaceSelectedRows(with: []) }
+    }
+
+    private func pasteRows() {
+        guard inlineEditor == nil, toneEditor == nil, !isSpecialSelectorPresented else { return }
+        #if os(macOS)
+        let data = NSPasteboard.general.data(forType: NSPasteboard.PasteboardType(TrackEventClipboard.typeIdentifier))
+        #else
+        let data = UIPasteboard.general.data(forPasteboardType: TrackEventClipboard.typeIdentifier)
+        #endif
+        guard let data, let events = TrackEventClipboard.decode(data) else { return }
+        replaceSelectedRows(with: events)
+    }
+
+    private func replaceSelectedRows(with events: [TrackEvent]) {
+        guard let track else { return }
+        let index = min(cursor.row, track.terminatorIndex)
+        let range = selectedRows.isEmpty ? index..<index : selectedRows
+        engine.replaceEvents(trackID: trackID, in: range, with: events)
+        rowSelection = nil
+        resetInlineEditor()
+        cursor.row = range.lowerBound
+        normalizeCursor()
+        isKeyboardFocused = true
     }
 
     private func handleCursorKey(
@@ -803,6 +885,7 @@ struct TrackEditorView: View {
         if isSpecialSelectorPresented {
             return .handled
         }
+        rowSelection = nil
         finishInlineEditorBeforeNavigation()
         cursor.page(by: delta, rowCount: rowCount)
         isKeyboardFocused = true
@@ -975,6 +1058,7 @@ struct TrackEditorView: View {
     }
 
     private func moveCursorToCell(row: Int, column: EventColumn) {
+        rowSelection = nil
         let wasEditing = inlineEditor != nil
         if wasEditing {
             commitInlineEditor()
@@ -1045,6 +1129,7 @@ struct TrackEditorView: View {
         origin: InlineEditorOrigin = .direct,
         selectAll: Bool = false
     ) -> Bool {
+        rowSelection = nil
         guard let track else { return false }
         let index = cursor.row
         guard track.events.indices.contains(index),
@@ -1131,6 +1216,7 @@ struct TrackEditorView: View {
         origin: InlineEditorOrigin = .direct,
         selectAll: Bool = false
     ) -> Bool {
+        rowSelection = nil
         guard let track else { return false }
         let index = cursor.row
         guard track.events.indices.contains(index),
@@ -1986,7 +2072,7 @@ private extension FlickDirection {
     }
 }
 
-private struct TrackSettingsView: View {
+struct TrackSettingsView: View {
     @State private var channel: Int
     @State private var startTick: Int
     @State private var keyShift: Int
@@ -2008,25 +2094,28 @@ private struct TrackSettingsView: View {
     var body: some View {
         NavigationStack {
             Form {
-                Stepper(value: $channel, in: 0...16) {
-                    Text(channel == 0 ? "Ch OFF" : "Ch \(channel)")
-                        .font(.body.monospacedDigit())
+                Picker("MIDIチャンネル", selection: $channel) {
+                    Text("OFF").tag(0)
+                    ForEach(1...16, id: \.self) { channel in
+                        Text("Ch \(channel)").tag(channel)
+                    }
                 }
                 Stepper(value: $startTick, in: -99...99) {
-                    Text("ST+ \(startTick)")
+                    Text("開始位置（tick）: \(startTick)")
                         .font(.body.monospacedDigit())
                 }
                 Stepper(value: $keyShift, in: -64...63) {
-                    Text("K#+ \(keyShift)")
+                    Text("移調（半音）: \(keyShift)")
                         .font(.body.monospacedDigit())
                 }
-                TextField("メモ", text: $memo)
+                TextField("トラック名", text: $memo)
                     .onChange(of: memo) { _, newValue in
                         if newValue.count > 36 {
                             memo = String(newValue.prefix(36))
                         }
                     }
             }
+            .formStyle(.grouped)
             .navigationTitle("トラック設定")
             #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)
@@ -2043,5 +2132,8 @@ private struct TrackSettingsView: View {
                 }
             }
         }
+        #if os(macOS)
+        .frame(minWidth: 420, minHeight: 320)
+        #endif
     }
 }
