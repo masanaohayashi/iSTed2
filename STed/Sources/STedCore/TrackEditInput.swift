@@ -1,3 +1,5 @@
+import Foundation
+
 public enum FlickDirection: Equatable, Sendable {
     case tap, left, up, right, down
 }
@@ -46,6 +48,7 @@ public struct NumericInput: Equatable, Sendable {
 public enum TrackerTextInput {
     public static let maximumLength = 4
     public static let symbolMaximumLength = 5
+    public static let commentMaximumLength = TrackComment.maximumBytes
 
     public static func maximumLength(for mode: TrackerTextInputMode) -> Int {
         switch mode {
@@ -53,6 +56,8 @@ public enum TrackerTextInput {
             return maximumLength
         case .symbol, .pitch:
             return symbolMaximumLength
+        case .comment:
+            return commentMaximumLength
         }
     }
 
@@ -107,6 +112,10 @@ public enum TrackerTextInput {
         return String(String.UnicodeScalarView(printable).prefix(symbolMaximumLength))
     }
 
+    public static func normalizedComment(_ text: String) -> String {
+        TrackComment.normalizedText(text)
+    }
+
     /// Parses the note-name syntax used by STed2's `ctc` function.
     ///
     /// `C4` is MIDI note 60. `#` and `+` raise a note, `-` or a following `B`
@@ -159,6 +168,7 @@ public enum TrackerTextInputMode: Equatable, Sendable {
     case note
     case symbol
     case pitch
+    case comment
 }
 
 public enum TrackerTextInputCommand: Equatable, Sendable {
@@ -180,6 +190,7 @@ public enum TrackerEditorKey: Equatable, Sendable {
     case forwardDeleteCharacter
     case insertMeasureLine
     case insertSpecialController
+    case insertComment
 
     public init?(characters: String) {
         switch characters {
@@ -191,6 +202,8 @@ public enum TrackerEditorKey: Equatable, Sendable {
             self = .insertMeasureLine
         case "/":
             self = .insertSpecialController
+        case "@", "`":
+            self = .insertComment
         default:
             return nil
         }
@@ -201,6 +214,7 @@ public enum TrackerEditorCommand: Equatable, Sendable {
     case deleteSelectedRow
     case insertMeasureLine
     case insertSpecialController
+    case insertComment
 }
 
 /// What A–G does on the current tracker row, matching STed2 `kc>='A' && kc<='G'`.
@@ -302,6 +316,8 @@ public enum TrackerEditorKeyMap {
             return .insertMeasureLine
         case .insertSpecialController:
             return .insertSpecialController
+        case .insertComment:
+            return .insertComment
         }
     }
 }
@@ -335,6 +351,8 @@ public struct TrackerTextInputSession: Equatable, Sendable {
             self.text = TrackerTextInput.normalizedSymbol(initialText)
         case .pitch:
             self.text = TrackerTextInput.normalizedNumeric(initialText, maximumLength: TrackerTextInput.symbolMaximumLength)
+        case .comment:
+            self.text = TrackerTextInput.normalizedComment(initialText)
         }
         caretPosition = self.text.count
         isAllSelected = selectAll && !self.text.isEmpty
@@ -355,11 +373,15 @@ public struct TrackerTextInputSession: Equatable, Sendable {
             isAllSelected = false
         }
 
-        guard text.count < TrackerTextInput.maximumLength(for: mode) else { return }
-
         var characters = Array(text)
         characters.insert(character, at: caretPosition)
-        text = String(characters)
+        let candidate = String(characters)
+        if mode == .comment {
+            guard TrackerTextInput.normalizedComment(candidate) == candidate else { return }
+        } else {
+            guard text.count < TrackerTextInput.maximumLength(for: mode) else { return }
+        }
+        text = candidate
         caretPosition += 1
     }
 
@@ -448,6 +470,10 @@ public struct TrackerTextInputSession: Equatable, Sendable {
             return normalized.first
         case .symbol:
             let normalized = TrackerTextInput.normalizedSymbol(String(character))
+            guard normalized.count == 1 else { return nil }
+            return normalized.first
+        case .comment:
+            let normalized = TrackerTextInput.normalizedComment(String(character))
             guard normalized.count == 1 else { return nil }
             return normalized.first
         }

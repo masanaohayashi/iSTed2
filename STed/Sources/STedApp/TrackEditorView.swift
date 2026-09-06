@@ -93,6 +93,7 @@ struct TrackEditorView: View {
         case direct
         case insertedNote
         case insertedSpecial
+        case insertedComment
     }
 
     private enum InlineEditorKind: Equatable {
@@ -100,6 +101,7 @@ struct TrackEditorView: View {
         case note
         case symbol
         case special(SpecialControllerField)
+        case comment
     }
 
     private struct SpecialInsertSession: Equatable {
@@ -120,7 +122,7 @@ struct TrackEditorView: View {
         var column: EventColumn {
             switch kind {
             case .numeric(let column): return column
-            case .note, .symbol: return .note
+            case .note, .symbol, .comment: return .note
             case .special(let field): return SpecialController.column(for: field)
             }
         }
@@ -173,7 +175,10 @@ struct TrackEditorView: View {
             ToolbarItem(placement: .automatic) {
                 Menu("小節") {
                     Button("小節参照を挿入・変更") { openSameMeasure() }
-                        .disabled((track?.measureNumber(at: cursor.row) ?? 1) <= 1)
+                        .disabled(
+                            (track.flatMap { sourceIndex(forDisplayRow: cursor.row, in: $0) }
+                                .map { track?.measureNumber(at: $0) ?? 1 } ?? 1) <= 1
+                        )
                     Button("参照を展開") { expandSameMeasures() }
                     Button("重複小節を参照化") {
                         finishInlineEditorBeforeNavigation()
@@ -510,8 +515,9 @@ struct TrackEditorView: View {
                 .foregroundStyle(TrackerPalette.paper)
             Text(":")
                 .foregroundStyle(TrackerPalette.paper)
-            if track?.events.indices.contains(index) == true,
-               track?.events[index].command == 0xfc {
+            if let track,
+               track.events.indices.contains(row.sourceRange.lowerBound),
+               track.events[row.sourceRange.lowerBound].command == 0xfc {
                 Text("========")
                     .frame(width: TrackerLayout.width(8), alignment: .leading)
                     .foregroundStyle(ink)
@@ -528,6 +534,37 @@ struct TrackEditorView: View {
                     .frame(width: TrackerLayout.width(12), alignment: .leading)
                     .foregroundStyle(ink)
                     .onTapGesture { moveCursorToCell(row: index, column: .st) }
+            } else if row.isComment {
+                HStack(spacing: 0) {
+                    Text(" [")
+                    if let inlineEditor,
+                       inlineEditor.row == index,
+                       inlineEditor.kind == .comment {
+                        inlineEditorField(
+                            kind: inlineEditor.kind,
+                            selectAll: inlineEditor.selectsText,
+                            copiedNotePreview: nil,
+                            isTrailing: false
+                        )
+                            .id(inlineEditor.sessionID)
+                    } else {
+                        Text(String(row.noteText.dropFirst(2).dropLast()))
+                            .lineLimit(1)
+                        Spacer(minLength: 0)
+                    }
+                    Text("]")
+                }
+                .frame(width: TrackerLayout.dataWidth, alignment: .leading)
+                .background(isSelected && cursor.column == .note ? TrackerPalette.cell : Color.clear)
+                .foregroundStyle(
+                    isSelected && cursor.column == .note
+                        ? TrackerPalette.crt
+                        : ink
+                )
+                .contentShape(Rectangle())
+                .onTapGesture {
+                    moveCursorToCell(row: index, column: .note)
+                }
             } else if row.isMeasureLine || row.isTerminator {
                 Text(row.noteText)
                     .lineLimit(1)
@@ -666,6 +703,8 @@ struct TrackEditorView: View {
             return .note
         case .symbol:
             return .symbol
+        case .comment:
+            return .comment
         case .special(let field):
             switch field {
             case .pitchBend:
@@ -717,14 +756,13 @@ struct TrackEditorView: View {
 
     private var canDelete: Bool {
         guard let track else { return false }
-        return cursor.row >= 0 && cursor.row < track.terminatorIndex
+        return sourceIndex(forDisplayRow: cursor.row, in: track) != nil
     }
 
     private func apply(_ input: TrackEditInput) {
         resetInlineEditor()
         guard let track else { return }
-        let index = cursor.row
-        guard track.events.indices.contains(index), index < track.terminatorIndex else { return }
+        guard let index = sourceIndex(forDisplayRow: cursor.row, in: track) else { return }
         engine.updateEvent(
             trackID: trackID,
             index: index,
@@ -736,17 +774,22 @@ struct TrackEditorView: View {
     private func insertEvent() {
         guard let track else { return }
         resetInlineEditor()
-        let index = min(cursor.row + 1, track.terminatorIndex)
+        let wasTerminator = sourceIndex(forDisplayRow: cursor.row, in: track) == nil
+        let index = sourceInsertionIndex(afterDisplayRow: cursor.row, in: track)
         engine.insertEvent(trackID: trackID, at: index)
-        cursor = TrackCursor(row: index, column: .note)
+        let destinationRow = wasTerminator
+            ? cursor.row
+            : min(cursor.row + 1, displayEventRowCount)
+        cursor = TrackCursor(row: destinationRow, column: .note)
         isKeyboardFocused = true
     }
 
     private func insertMeasureLine() {
         guard let track else { return }
         resetInlineEditor()
-        let index = min(max(0, cursor.row), track.terminatorIndex)
-        engine.insertEvent(trackID: trackID, at: index, .measureLine)
+        let index = min(max(0, cursor.row), displayEventRowCount)
+        let source = sourceIndex(forDisplayRow: index, in: track) ?? track.terminatorIndex
+        engine.insertEvent(trackID: trackID, at: source, .measureLine)
         cursor = TrackCursor(row: index + 1, column: .note)
         normalizeCursor()
         isKeyboardFocused = true
@@ -757,12 +800,14 @@ struct TrackEditorView: View {
             replaceSelectedRows(with: [])
             return
         }
-        guard let track, cursor.row < track.terminatorIndex else { return }
+        guard let track,
+              let sourceRange = sourceRange(forDisplayRow: cursor.row, in: track),
+              !sourceRange.isEmpty,
+              sourceRange.lowerBound < track.terminatorIndex
+        else { return }
         resetInlineEditor()
-        let index = cursor.row
-        engine.deleteEvent(trackID: trackID, at: index)
-        let newTerminatorIndex = max(0, track.terminatorIndex - 1)
-        cursor.row = min(index, newTerminatorIndex)
+        engine.replaceEvents(trackID: trackID, in: sourceRange, with: [])
+        cursor.row = min(cursor.row, max(0, displayEventRowCount - 1))
         isKeyboardFocused = true
     }
 
@@ -787,6 +832,9 @@ struct TrackEditorView: View {
         case .insertSpecialController:
             insertSpecialController()
             return .handled
+        case .insertComment:
+            beginCommentEdit()
+            return .handled
         }
     }
 
@@ -804,16 +852,19 @@ struct TrackEditorView: View {
     private func openSameMeasure() {
         finishInlineEditorBeforeNavigation()
         guard inlineEditor == nil else { return }
-        guard let track, track.measureNumber(at: cursor.row) > 1 else { return }
+        guard let track,
+              let sourceRow = sourceIndex(forDisplayRow: cursor.row, in: track),
+              track.measureNumber(at: sourceRow) > 1
+        else { return }
         let row = cursor.row
-        let existing = row < track.terminatorIndex && track.events[row].command == 0xfc
+        let existing = track.events[sourceRow].command == 0xfc
         engine.beginEdit()
-        if !existing && !engine.insertSameMeasure(trackID: trackID, at: row, referringTo: 1) {
+        if !existing && !engine.insertSameMeasure(trackID: trackID, at: sourceRow, referringTo: 1) {
             engine.cancelEdit()
             return
         }
         sameMeasureOriginalRow = row
-        if !existing && row > 0 && track.events[row - 1].command < 0xfc { cursor.row += 1 }
+        if !existing && sourceRow > 0 && track.events[sourceRow - 1].command < 0xfc { cursor.row += 1 }
         beginSameMeasureNumberEdit("", selectAll: false)
     }
 
@@ -832,14 +883,68 @@ struct TrackEditorView: View {
     private func expandSameMeasures() {
         guard let track else { return }
         finishInlineEditorBeforeNavigation()
-        let range = !selectedRows.isEmpty ? selectedRows
-            : (track.events.indices.contains(cursor.row) && track.events[cursor.row].command == 0xfc
-               ? cursor.row..<(cursor.row + 1) : 0..<track.terminatorIndex)
+        let range: Range<Int>
+        if !selectedRows.isEmpty {
+            guard let sourceRange = sourceRange(forDisplayRows: selectedRows, in: track) else { return }
+            range = sourceRange
+        } else if let index = sourceIndex(forDisplayRow: cursor.row, in: track),
+                  track.events[index].command == 0xfc {
+            range = index..<(index + 1)
+        } else {
+            range = 0..<track.terminatorIndex
+        }
         if engine.expandSameMeasures(trackID: trackID, in: range) { clearHistoryEditors() }
     }
 
     private var selectedRows: Range<Int> {
-        rowSelection?.range(eventCount: track?.terminatorIndex ?? 0) ?? 0..<0
+        rowSelection?.range(eventCount: displayEventRowCount) ?? 0..<0
+    }
+
+    private var displayEventRowCount: Int {
+        guard let track else { return 0 }
+        let rows = displayRows(for: track)
+        return rows.firstIndex(where: \.isTerminator) ?? rows.count
+    }
+
+    private func displayRows(for track: Track) -> [EventRow] {
+        guard let song = engine.song else { return [] }
+        return track.eventRows(
+            timeBase: song.timeBase,
+            beatNumerator: song.beatNumerator,
+            beatDenominator: song.beatDenominator
+        )
+    }
+
+    private func sourceRange(forDisplayRow row: Int, in track: Track) -> Range<Int>? {
+        let rows = displayRows(for: track)
+        guard rows.indices.contains(row) else { return nil }
+        return rows[row].sourceRange
+    }
+
+    private func sourceIndex(forDisplayRow row: Int, in track: Track) -> Int? {
+        guard let range = sourceRange(forDisplayRow: row, in: track),
+              !range.isEmpty,
+              range.lowerBound < track.terminatorIndex
+        else { return nil }
+        return range.lowerBound
+    }
+
+    private func sourceInsertionIndex(afterDisplayRow row: Int, in track: Track) -> Int {
+        let rows = displayRows(for: track)
+        guard rows.indices.contains(row) else { return track.terminatorIndex }
+        return min(rows[row].sourceRange.upperBound, track.terminatorIndex)
+    }
+
+    private func sourceRange(forDisplayRows range: Range<Int>, in track: Track) -> Range<Int>? {
+        guard !range.isEmpty else { return nil }
+        let rows = displayRows(for: track)
+        guard range.lowerBound >= 0,
+              range.upperBound <= rows.count,
+              let first = rows[range].first,
+              let last = rows[range].last
+        else { return nil }
+        let source = first.sourceRange.lowerBound..<last.sourceRange.upperBound
+        return source.lowerBound..<min(source.upperBound, track.terminatorIndex)
     }
 
     private func handleDirectionalPress(_ press: KeyPress, rowCount: Int) -> KeyPress.Result {
@@ -865,8 +970,9 @@ struct TrackEditorView: View {
 
     private func copyRows(cutting: Bool = false) {
         guard let track, !selectedRows.isEmpty else { return }
+        guard let sourceRange = sourceRange(forDisplayRows: selectedRows, in: track) else { return }
         let events: [TrackEvent]
-        do { events = try track.expandedEvents(in: selectedRows) }
+        do { events = try track.expandedEvents(in: sourceRange) }
         catch { engine.reportError(error); return }
         let data = TrackEventClipboard.encode(events)
         #if os(macOS)
@@ -892,12 +998,22 @@ struct TrackEditorView: View {
 
     private func replaceSelectedRows(with events: [TrackEvent]) {
         guard let track else { return }
-        let index = min(cursor.row, track.terminatorIndex)
-        let range = selectedRows.isEmpty ? index..<index : selectedRows
-        engine.replaceEvents(trackID: trackID, in: range, with: events)
+        let rawRange: Range<Int>
+        let displayRange = selectedRows
+        if displayRange.isEmpty {
+            let index = min(
+                sourceIndex(forDisplayRow: cursor.row, in: track) ?? track.terminatorIndex,
+                track.terminatorIndex
+            )
+            rawRange = index..<index
+        } else {
+            guard let selectedSourceRange = sourceRange(forDisplayRows: displayRange, in: track) else { return }
+            rawRange = selectedSourceRange
+        }
+        engine.replaceEvents(trackID: trackID, in: rawRange, with: events)
         rowSelection = nil
         resetInlineEditor()
-        cursor.row = range.lowerBound
+        cursor.row = displayRange.isEmpty ? cursor.row : displayRange.lowerBound
         normalizeCursor()
         isKeyboardFocused = true
     }
@@ -985,7 +1101,7 @@ struct TrackEditorView: View {
                     column: .st,
                     selectAll: true
                 )
-            case .symbol, .special:
+            case .symbol, .special, .comment:
                 return finishInsertedEditorAndMove(
                     .right,
                     rowCount: rowCount,
@@ -1023,7 +1139,7 @@ struct TrackEditorView: View {
                     rowCount: rowCount,
                     selectDestination: selectDestination
                 )
-            case .symbol, .special:
+            case .symbol, .special, .comment:
                 return finishInsertedEditorAndMove(
                     .left,
                     rowCount: rowCount,
@@ -1064,8 +1180,8 @@ struct TrackEditorView: View {
         selectAll: Bool
     ) -> KeyPress.Result {
         guard let track,
-              track.events.indices.contains(row),
-              let value = track.events[row].numericValue(in: column)
+              let sourceRow = sourceIndex(forDisplayRow: row, in: track),
+              let value = track.events[sourceRow].numericValue(in: column)
         else {
             finishInlineEditorBeforeNavigation()
             isKeyboardFocused = true
@@ -1087,13 +1203,15 @@ struct TrackEditorView: View {
     }
 
     private func beginInsertedNoteEditor(row: Int, selectAll: Bool) -> KeyPress.Result {
-        guard let track, track.events.indices.contains(row) else {
+        guard let track,
+              let sourceRow = sourceIndex(forDisplayRow: row, in: track)
+        else {
             finishInlineEditorBeforeNavigation()
             isKeyboardFocused = true
             return .handled
         }
 
-        let initialText = track.events[row].noteInputText
+        let initialText = track.events[sourceRow].noteInputText
         commitInlineEditor()
         cursor = TrackCursor(row: row, column: .note)
         if beginNoteEdit(
@@ -1153,11 +1271,14 @@ struct TrackEditorView: View {
 
     private func beginEditorAtCursor(selectAll: Bool) -> Bool {
         guard let track,
-              track.events.indices.contains(cursor.row),
-              cursor.row < track.terminatorIndex
+              let sourceRow = sourceIndex(forDisplayRow: cursor.row, in: track)
         else { return false }
 
-        let event = track.events[cursor.row]
+        let event = track.events[sourceRow]
+        if event.isCommentStart {
+            beginCommentEdit(at: cursor.row, sourceIndex: sourceRow, selectAll: selectAll)
+            return true
+        }
         if cursor.column == .note, event.command < 0x80 {
             return beginNoteEdit(
                 initialText: event.noteInputText,
@@ -1177,13 +1298,55 @@ struct TrackEditorView: View {
         )
     }
 
+    /// Opens the STed2 comment editor. A new comment is inserted immediately
+    /// at the current visible row; an existing comment replaces its entire
+    /// `0xf6`/`0xf7` record block when committed.
+    private func beginCommentEdit(
+        at displayRow: Int? = nil,
+        sourceIndex: Int? = nil,
+        selectAll: Bool = false
+    ) {
+        guard let track else { return }
+        rowSelection = nil
+        let row = displayRow ?? cursor.row
+        let source = sourceIndex
+            ?? self.sourceIndex(forDisplayRow: row, in: track)
+            ?? track.terminatorIndex
+        let existingText = source < track.terminatorIndex
+            ? track.commentText(at: source)
+            : nil
+
+        engine.beginEdit()
+        if existingText == nil {
+            engine.replaceEventsDuringEdit(
+                trackID: trackID,
+                in: source..<source,
+                with: TrackComment.events(for: "")
+            )
+        }
+        cursor = TrackCursor(row: row, column: .note)
+        inlineText = TrackerTextInput.normalizedComment(existingText ?? "")
+        inlineEditorSessionID += 1
+        inlineEditor = InlineEditor(
+            row: row,
+            kind: .comment,
+            origin: existingText == nil ? .insertedComment : .direct,
+            sessionID: inlineEditorSessionID,
+            selectsText: selectAll,
+            copiedNotePreview: nil
+        )
+        isKeyboardFocused = false
+    }
+
     private func insertNoteBeforeCursor() {
         guard let track else { return }
         resetInlineEditor()
         engine.beginEdit()
-        let index = min(max(0, cursor.row), track.terminatorIndex)
-        let insertedEvent = engine.insertNoteBefore(trackID: trackID, at: index)
-        cursor = TrackCursor(row: index, column: .note)
+        let displayIndex = min(max(0, cursor.row), displayEventRowCount)
+        let sourceIndex = self.sourceIndex(forDisplayRow: displayIndex, in: track)
+            ?? track.terminatorIndex
+        let insertedEvent = engine.insertNoteBefore(trackID: trackID, at: sourceIndex)
+        cursor = TrackCursor(row: displayIndex, column: .note)
         if !beginNoteEdit(
             initialText: "",
             copiedNotePreview: insertedEvent?.noteInputText,
@@ -1213,15 +1376,14 @@ struct TrackEditorView: View {
     ) -> Bool {
         rowSelection = nil
         guard let track else { return false }
-        let index = cursor.row
-        guard track.events.indices.contains(index),
-              index < track.terminatorIndex
+        let displayRow = cursor.row
+        guard let sourceRow = sourceIndex(forDisplayRow: displayRow, in: track)
         else { return false }
 
-        let event = track.events[index]
+        let event = track.events[sourceRow]
         if event.command == 0xfc {
             engine.beginEdit()
-            sameMeasureOriginalRow = index
+            sameMeasureOriginalRow = displayRow
             beginSameMeasureNumberEdit(initialText, selectAll: selectAll)
             return true
         }
@@ -1234,7 +1396,7 @@ struct TrackEditorView: View {
             inlineText = TrackerTextInput.normalizedNumeric(initialText)
             inlineEditorSessionID += 1
             inlineEditor = InlineEditor(
-                row: index,
+                row: displayRow,
                 kind: .numeric(column),
                 origin: origin,
                 sessionID: inlineEditorSessionID,
@@ -1249,7 +1411,7 @@ struct TrackEditorView: View {
             )
             inlineEditorSessionID += 1
             inlineEditor = InlineEditor(
-                row: index,
+                row: displayRow,
                 kind: .special(.pitchBend),
                 origin: origin,
                 sessionID: inlineEditorSessionID,
@@ -1263,8 +1425,7 @@ struct TrackEditorView: View {
 
     private func handleNoteLetter(_ initialCharacter: Character) -> KeyPress.Result {
         guard let track else { return .ignored }
-        let index = min(max(0, cursor.row), track.terminatorIndex)
-        guard track.events.indices.contains(index) else { return .ignored }
+        guard let index = sourceIndex(forDisplayRow: cursor.row, in: track) else { return .ignored }
 
         switch TrackerNoteKeyAction.forCommand(track.events[index].command) {
         case .editExisting:
@@ -1280,9 +1441,11 @@ struct TrackEditorView: View {
         guard let track else { return .ignored }
         resetInlineEditor()
         engine.beginEdit()
-        let index = min(max(0, cursor.row), track.terminatorIndex)
-        let insertedEvent = engine.insertNoteBefore(trackID: trackID, at: index)
-        cursor = TrackCursor(row: index, column: .note)
+        let displayIndex = min(max(0, cursor.row), displayEventRowCount)
+        let sourceIndex = self.sourceIndex(forDisplayRow: displayIndex, in: track)
+            ?? track.terminatorIndex
+        let insertedEvent = engine.insertNoteBefore(trackID: trackID, at: sourceIndex)
+        cursor = TrackCursor(row: displayIndex, column: .note)
         if beginNoteEdit(
             initialText: String(initialCharacter),
             copiedNotePreview: insertedEvent?.noteInputText,
@@ -1306,17 +1469,16 @@ struct TrackEditorView: View {
     ) -> Bool {
         rowSelection = nil
         guard let track else { return false }
-        let index = cursor.row
-        guard track.events.indices.contains(index),
-              index < track.terminatorIndex,
-              track.events[index].command < 0x80
+        let displayRow = cursor.row
+        guard let sourceRow = sourceIndex(forDisplayRow: displayRow, in: track),
+              track.events[sourceRow].command < 0x80
         else { return false }
 
         cursor.column = .note
         inlineText = TrackerTextInput.normalizedNote(initialText)
         inlineEditorSessionID += 1
         inlineEditor = InlineEditor(
-            row: index,
+            row: displayRow,
             kind: .note,
             origin: origin,
             sessionID: inlineEditorSessionID,
@@ -1335,18 +1497,25 @@ struct TrackEditorView: View {
 
         guard let inlineEditor,
               let track,
-              track.events.indices.contains(inlineEditor.row),
-              inlineEditor.row < track.terminatorIndex
+              let sourceRow = sourceIndex(forDisplayRow: inlineEditor.row, in: track)
         else {
             cancelInlineEditor()
             return
         }
 
-        let event = track.events[inlineEditor.row]
         let draftText = draftText ?? inlineText
+        if inlineEditor.kind == .comment {
+            commitCommentEditor(
+                sourceRow: sourceRow,
+                text: draftText
+            )
+            return
+        }
+
+        let event = track.events[sourceRow]
         if isSameMeasureEditing {
             guard let number = Int(draftText), number >= 1, number <= 1024,
-                  engine.insertSameMeasure(trackID: trackID, at: inlineEditor.row, referringTo: number)
+                  engine.insertSameMeasure(trackID: trackID, at: sourceRow, referringTo: number)
             else { return }
             isSameMeasureEditing = false
             resetInlineEditor()
@@ -1377,7 +1546,7 @@ struct TrackEditorView: View {
                 maximumLength: TrackerTextInput.symbolMaximumLength
             )
             updated = value.map { event.settingEditorValue($0, action: .editPitchBend) }
-        case .symbol, .special:
+        case .symbol, .special, .comment:
             cancelInlineEditor()
             return
         }
@@ -1385,10 +1554,26 @@ struct TrackEditorView: View {
         if let updated {
             engine.updateEvent(
                 trackID: trackID,
-                index: inlineEditor.row,
+                index: sourceRow,
                 updated
             )
         }
+        resetInlineEditor()
+        isKeyboardFocused = true
+    }
+
+    private func commitCommentEditor(sourceRow: Int, text: String) {
+        guard let track,
+              let range = track.commentRange(at: sourceRow)
+        else {
+            cancelInlineEditor()
+            return
+        }
+        engine.replaceEventsDuringEdit(
+            trackID: trackID,
+            in: range,
+            with: TrackComment.events(for: text)
+        )
         resetInlineEditor()
         isKeyboardFocused = true
     }
@@ -1407,6 +1592,13 @@ struct TrackEditorView: View {
         let editor = inlineEditor
         isSpecialSelectorPresented = false
         specialInsert = nil
+        if editor?.origin == .insertedComment {
+            engine.cancelEdit()
+            if let row = editor?.row { cursor.row = row }
+            resetInlineEditor()
+            isKeyboardFocused = true
+            return
+        }
         switch TrackerInlineCancelAction.forInsertedNote(
             editor?.origin == .insertedNote || editor?.origin == .insertedSpecial
         ) {
@@ -1433,11 +1625,13 @@ struct TrackEditorView: View {
         resetInlineEditor()
         engine.beginEdit()
         isSpecialSelectorPresented = false
-        let index = min(max(0, cursor.row), track.terminatorIndex)
-        engine.insertEvent(trackID: trackID, at: index, .specialControllerPlaceholder)
-        cursor = TrackCursor(row: index, column: .note)
-        specialInsert = SpecialInsertSession(row: index, code: nil, fields: [], fieldIndex: 0)
-        beginSpecialSymbolEdit(at: index)
+        let displayIndex = min(max(0, cursor.row), displayEventRowCount)
+        let sourceIndex = self.sourceIndex(forDisplayRow: displayIndex, in: track)
+            ?? track.terminatorIndex
+        engine.insertEvent(trackID: trackID, at: sourceIndex, .specialControllerPlaceholder)
+        cursor = TrackCursor(row: displayIndex, column: .note)
+        specialInsert = SpecialInsertSession(row: displayIndex, code: nil, fields: [], fieldIndex: 0)
+        beginSpecialSymbolEdit(at: displayIndex)
     }
 
     private func beginSpecialSymbolEdit(at index: Int) {
@@ -1466,7 +1660,7 @@ struct TrackEditorView: View {
                 return .handled
             }
             return handleSpecialInsertCommit()
-        case .special, .numeric, .note:
+        case .special, .numeric, .note, .comment:
             return handleSpecialInsertCommit()
         }
     }
@@ -1480,7 +1674,7 @@ struct TrackEditorView: View {
             commitSpecialSymbol(inlineText)
         case .special:
             commitSpecialField(inlineText)
-        case .numeric, .note:
+        case .numeric, .note, .comment:
             commitSpecialField(inlineText)
         }
         return .handled
@@ -1505,16 +1699,18 @@ struct TrackEditorView: View {
     }
 
     private func applySpecialCode(_ code: SpecialControllerCode, at index: Int) {
-        guard let track, track.events.indices.contains(index) else {
+        guard let track,
+              let sourceIndex = sourceIndex(forDisplayRow: index, in: track)
+        else {
             cancelSpecialInsert()
             return
         }
         let event = SpecialController.makeEvent(
             code,
-            previousEvents: track.events.prefix(index),
+            previousEvents: track.events.prefix(sourceIndex),
             trackMIDIChannel: track.midiChannel
         )
-        engine.updateEvent(trackID: trackID, index: index, event)
+        engine.updateEvent(trackID: trackID, index: sourceIndex, event)
         let fields = SpecialController.fields(for: code)
         specialInsert = SpecialInsertSession(
             row: index,
@@ -1551,8 +1747,10 @@ struct TrackEditorView: View {
     }
 
     private func specialFieldInitialText(_ field: SpecialControllerField, row: Int) -> String {
-        guard let track, track.events.indices.contains(row) else { return "" }
-        let event = track.events[row]
+        guard let track,
+              let sourceRow = sourceIndex(forDisplayRow: row, in: track)
+        else { return "" }
+        let event = track.events[sourceRow]
         switch field {
         case .stepTime:
             return event.delay == 0 ? "" : "\(event.delay)"
@@ -1573,12 +1771,12 @@ struct TrackEditorView: View {
         guard let editor = inlineEditor,
               case .special(let field) = editor.kind,
               let track,
-              track.events.indices.contains(editor.row)
+              let sourceRow = sourceIndex(forDisplayRow: editor.row, in: track)
         else {
             cancelSpecialInsert()
             return
         }
-        var event = track.events[editor.row]
+        var event = track.events[sourceRow]
         let range = SpecialController.numericRange(for: field)
         let maximumLength = field == .pitchBend
             ? TrackerTextInput.symbolMaximumLength
@@ -1599,7 +1797,7 @@ struct TrackEditorView: View {
         case .pitchBend:
             event = SpecialController.pitchBendEvent(delay: event.delay, bend: value)
         }
-        engine.updateEvent(trackID: trackID, index: editor.row, event)
+        engine.updateEvent(trackID: trackID, index: sourceRow, event)
         resetInlineEditor()
         beginNextSpecialField()
     }
@@ -1697,13 +1895,14 @@ struct TrackEditorView: View {
 
     private func openToneSelectorIfNeeded() -> Bool {
         guard let editor = inlineEditor, editor.column == .gt,
-              let track, track.events.indices.contains(editor.row),
-              track.events[editor.row].command == 0xec || track.events[editor.row].command == 0xe2
+              let track,
+              let sourceRow = sourceIndex(forDisplayRow: editor.row, in: track),
+              track.events[sourceRow].command == 0xec || track.events[sourceRow].command == 0xe2
         else { return false }
         toneEditor = editor
         toneDraft = inlineText
         toneIndex = inlineText.isEmpty
-            ? Int(track.events[editor.row].param1)
+            ? Int(track.events[sourceRow].param1)
             : TrackerTextInput.numericValue(inlineText, in: 0...127) ?? 0
         toneIndex = min(127, toneIndex)
         resetInlineEditor()

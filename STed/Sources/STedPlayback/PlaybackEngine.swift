@@ -321,6 +321,15 @@ public final class PlaybackEngine: ObservableObject {
         try? rebuildPlayback(resetPosition: false)
     }
 
+    /// Replaces raw track records while retaining the edit transaction that
+    /// was opened by the track editor. This lets multi-record inline values,
+    /// such as STed2 comments, be undone as one operation.
+    public func replaceEventsDuringEdit(trackID: Int, in range: Range<Int>, with events: [TrackEvent]) {
+        guard let index = song?.tracks.firstIndex(where: { $0.id == trackID }) else { return }
+        song?.tracks[index].replaceEvents(in: range, with: events)
+        try? rebuildPlayback(resetPosition: false)
+    }
+
     public func updateTrack(
         trackID: Int,
         midiChannel: Int?,

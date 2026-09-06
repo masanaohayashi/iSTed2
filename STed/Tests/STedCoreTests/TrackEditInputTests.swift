@@ -232,6 +232,33 @@ final class TrackEditInputTests: XCTestCase {
         )
     }
 
+    func testAtAndBacktickOpenTheCommentEditor() {
+        XCTAssertEqual(TrackerEditorKey(characters: "@"), .insertComment)
+        XCTAssertEqual(TrackerEditorKey(characters: "`"), .insertComment)
+        XCTAssertEqual(
+            TrackerEditorKeyMap.command(for: .insertComment, isInlineEditing: false),
+            .insertComment
+        )
+        XCTAssertNil(TrackerEditorKeyMap.command(for: .insertComment, isInlineEditing: true))
+    }
+
+    func testCommentTextInputAllowsTwentyPrintableCharacters() {
+        var input = TrackerTextInputSession(mode: .comment, initialText: "Hi")
+        input.insert(" there\n")
+        input.insert(String(repeating: "x", count: 30))
+
+        XCTAssertEqual(input.text, "Hi therexxxxxxxxxxxx")
+        XCTAssertEqual(input.text.count, TrackerTextInput.commentMaximumLength)
+    }
+
+    func testCommentTextInputKeepsShiftJISRoundTripSafe() {
+        var input = TrackerTextInputSession(mode: .comment)
+        input.insert("A😀B")
+
+        XCTAssertEqual(input.text, "AB")
+        XCTAssertEqual(TrackComment.text(from: TrackComment.events(for: input.text)[...]), "AB")
+    }
+
     func testMainEditorDeleteRemovesTheSelectedRow() {
         let keys: [TrackerEditorKey] = [
             .delete, .deleteForward, .backspaceCharacter, .forwardDeleteCharacter

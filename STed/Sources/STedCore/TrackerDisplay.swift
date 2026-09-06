@@ -10,7 +10,7 @@ extension TrackEvent {
         if command < 0x80 {
             return delay == 0 ? .yellow : .white
         }
-        if command < 0xfd && command != 0xf6 {
+        if command < 0xfd && command != 0xf6 && command != 0xf7 {
             return .cyan
         }
         return .white

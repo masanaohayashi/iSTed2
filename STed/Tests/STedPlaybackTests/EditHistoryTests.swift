@@ -83,6 +83,35 @@ final class EditHistoryTests: XCTestCase {
     }
 
     @MainActor
+    func testCommentInsertAndCommitIsOneUndo() async throws {
+        let engine = PlaybackEngine()
+        try TestProjectFixture.loadPhrase(into: engine)
+        let before = try XCTUnwrap(engine.song)
+        let id = before.tracks[0].id
+        let insertionIndex = before.tracks[0].terminatorIndex
+
+        engine.beginEdit()
+        engine.replaceEventsDuringEdit(
+            trackID: id,
+            in: insertionIndex..<insertionIndex,
+            with: TrackComment.events(for: "")
+        )
+        let commentRange = try XCTUnwrap(engine.song?.tracks[0].commentRange(at: insertionIndex))
+        engine.replaceEventsDuringEdit(
+            trackID: id,
+            in: commentRange,
+            with: TrackComment.events(for: "cue")
+        )
+        engine.endEdit()
+        let after = try XCTUnwrap(engine.song)
+
+        engine.undo()
+        XCTAssertEqual(engine.song, before)
+        engine.redo()
+        XCTAssertEqual(engine.song, after)
+    }
+
+    @MainActor
     func testCancelledAndNoOpEditsDoNotPolluteHistory() async throws {
         let engine = PlaybackEngine()
         try TestProjectFixture.loadPhrase(into: engine)

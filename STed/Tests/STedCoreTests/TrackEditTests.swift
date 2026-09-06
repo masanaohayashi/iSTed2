@@ -97,6 +97,66 @@ final class TrackEditTests: XCTestCase {
         XCTAssertEqual(track.events.map(\.command), [0xfe])
     }
 
+    func testCommentInsertReplaceAndDeleteTreatTheBlockAsOneEvent() {
+        let end = TrackEvent(command: 0xfe, delay: 0, param1: 0, param2: 0)
+        var track = Track(id: 0, number: 1, events: [.defaultNote, end])
+
+        track.insertComment("first", at: 1)
+        XCTAssertEqual(track.events.count, 12)
+        XCTAssertEqual(track.commentText(at: 1), "first")
+        XCTAssertEqual(track.commentRange(at: 1), 1..<11)
+
+        track.replaceComment(at: 1, with: "second")
+        XCTAssertEqual(track.commentText(at: 1), "second")
+        XCTAssertEqual(track.events[1].command, TrackComment.command)
+
+        track.deleteEvent(at: 1)
+        XCTAssertEqual(track.events, [.defaultNote, end])
+    }
+
+    func testCommentsRoundTripThroughRCPWithoutEnteringPlayback() throws {
+        var song = Song(
+            title: "comments",
+            timeBase: 48,
+            tempoBPM: 120,
+            tracks: [Track(id: 0, number: 1, events: [TrackEvent(command: 0xfe, delay: 0, param1: 0, param2: 0)])],
+            userSysEx: Array(repeating: Array(repeating: UInt8(0), count: 0x18), count: 8)
+        )
+        song.tracks[0].insertComment("cue", at: 0)
+
+        let loaded = try RCPDecoder.song(from: RCPEncoder.encode(song))
+        XCTAssertEqual(loaded, song)
+        XCTAssertThrowsError(try loaded.playbackSequence())
+    }
+
+    func testCommentsAreSilentAndDoNotAdvanceFollowingNotes() throws {
+        let comment = TrackComment.events(for: "cue")
+        let song = Song(
+            title: "comments",
+            timeBase: 48,
+            tempoBPM: 120,
+            tracks: [Track(
+                id: 0,
+                number: 1,
+                events: [
+                    TrackEvent(command: 60, delay: 48, param1: 24, param2: 100),
+                    comment[0], comment[1], comment[2], comment[3], comment[4],
+                    comment[5], comment[6], comment[7], comment[8], comment[9],
+                    TrackEvent(command: 64, delay: 48, param1: 24, param2: 100),
+                    TrackEvent(command: 0xfe, delay: 0, param1: 0, param2: 0)
+                ]
+            )
+        ]
+        )
+
+        let sequence = try song.playbackSequence()
+        XCTAssertEqual(sequence.events.map(\.bytes), [
+            [0x90, 60, 100], [0x80, 60, 0],
+            [0x90, 64, 100], [0x80, 64, 0]
+        ])
+        XCTAssertEqual(sequence.events.map(\.ticks), [0, 24, 48, 72])
+    }
+
     func testInsertedNoteChangesPlaybackAndRoundTrips() throws {
         var song = try RCPDecoder.song(from: RCPDemo.middleC)
         song.tracks[0].insertEvent(TrackEvent(command: 64, delay: 48, param1: 36, param2: 100), at: 1)

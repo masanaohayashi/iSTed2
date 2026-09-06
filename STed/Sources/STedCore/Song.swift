@@ -77,6 +77,12 @@ public struct EventRow: Equatable, Sendable {
     public var velText: String
     public var isMeasureLine: Bool = false
     public var ink: TrackerInk = .white
+    /// Range of raw track events represented by this visible row. Most rows
+    /// contain one event; a comment row contains its `0xf6` record and all
+    /// contiguous `0xf7` continuation records.
+    public var sourceRange: Range<Int> = 0..<1
+    public var isComment: Bool = false
+    public var commentText: String = ""
 }
 
 public struct Track: Equatable, Identifiable, Sendable {
@@ -131,7 +137,9 @@ public struct Track: Equatable, Identifiable, Sendable {
         var previousCommand: UInt8 = 0xfd
         var previousDelay: UInt8 = 1
         var appendedTerminator = false
-        for (eventIndex, event) in events.enumerated() {
+        var eventIndex = 0
+        while eventIndex < events.count {
+            let event = events[eventIndex]
             let time = MusicalTime(
                 tick: tick,
                 timeBase: timeBase,
@@ -153,17 +161,54 @@ public struct Track: Equatable, Identifiable, Sendable {
                         noteText: cells.note,
                         stText: cells.st,
                         gtText: cells.gt,
-                        velText: cells.vel
+                        velText: cells.vel,
+                        isMeasureLine: false,
+                        ink: .white,
+                        sourceRange: eventIndex..<(eventIndex + 1)
                     )
                 )
                 appendedTerminator = true
                 break
             }
+
             let showsMeasure = time.measure != lastMeasure
             if showsMeasure {
                 lastMeasure = time.measure
                 stepInMeasure = 1
             }
+
+            // A comment is one visible row even though the RCP record uses a
+            // 0xf6 header followed by up to nine 0xf7 continuation records.
+            // Continuations carry no timing and must not affect chord or step
+            // numbering of the following event.
+            if event.isCommentStart,
+               let commentRange = TrackComment.range(in: events, startingAt: eventIndex) {
+                let text = TrackComment.text(from: events[commentRange])
+                rows.append(
+                    EventRow(
+                        time: time,
+                        label: "Comment",
+                        isTerminator: false,
+                        st: 0,
+                        gt: 0,
+                        vel: 0,
+                        showsMeasure: showsMeasure,
+                        stepNumber: nil,
+                        noteText: TrackComment.displayText(text),
+                        stText: "",
+                        gtText: "",
+                        velText: "",
+                        isMeasureLine: false,
+                        ink: .white,
+                        sourceRange: commentRange,
+                        isComment: true,
+                        commentText: text
+                    )
+                )
+                eventIndex = commentRange.upperBound
+                continue
+            }
+
             let isNoteLike = event.command < 0xf0
             let isChord = isNoteLike
                 && !showsMeasure
@@ -194,7 +239,8 @@ public struct Track: Equatable, Identifiable, Sendable {
                     gtText: isMeasureLine ? "" : cells.gt,
                     velText: isMeasureLine ? "" : cells.vel,
                     isMeasureLine: isMeasureLine,
-                    ink: event.trackerInk
+                    ink: event.trackerInk,
+                    sourceRange: eventIndex..<(eventIndex + 1)
                 )
             )
             previousCommand = event.command
@@ -204,6 +250,7 @@ public struct Track: Equatable, Identifiable, Sendable {
             } else if event.command < 0xf5 {
                 tick += Int(event.delay)
             }
+            eventIndex += 1
         }
         if !appendedTerminator {
             let time = MusicalTime(
@@ -225,7 +272,10 @@ public struct Track: Equatable, Identifiable, Sendable {
                     noteText: "End of Track",
                     stText: "",
                     gtText: "",
-                    velText: ""
+                    velText: "",
+                    isMeasureLine: false,
+                    ink: .white,
+                    sourceRange: events.count..<events.count
                 )
             )
         }
@@ -234,6 +284,28 @@ public struct Track: Equatable, Identifiable, Sendable {
 
     public var terminatorIndex: Int {
         events.firstIndex(where: \.isTerminator) ?? events.count
+    }
+
+    /// Returns the raw event range for the comment beginning at `index`.
+    /// Continuation records are included so edits and deletions treat a
+    /// comment as one logical tracker row.
+    public func commentRange(at index: Int) -> Range<Int>? {
+        TrackComment.range(in: events, startingAt: index)
+    }
+
+    public func commentText(at index: Int) -> String? {
+        guard let range = commentRange(at: index) else { return nil }
+        return TrackComment.text(from: events[range])
+    }
+
+    public mutating func insertComment(_ text: String, at index: Int) {
+        let clamped = min(max(0, index), terminatorIndex)
+        replaceEvents(in: clamped..<clamped, with: TrackComment.events(for: text))
+    }
+
+    public mutating func replaceComment(at index: Int, with text: String) {
+        guard let range = commentRange(at: index) else { return }
+        replaceEvents(in: range, with: TrackComment.events(for: text))
     }
 
     public mutating func insertEvent(_ event: TrackEvent = .defaultNote, at index: Int) {
@@ -277,6 +349,11 @@ public struct Track: Equatable, Identifiable, Sendable {
             cursor -= 1
             let event = events[cursor]
             let command = event.command
+            if event.isCommentStart || event.isCommentContinuation {
+                // Comments are display-only records and do not terminate the
+                // backwards step-count scan for the measure line.
+                continue
+            }
             if command < 0xf0 {
                 let delay = Int(event.delay)
                 if delay != 0 {
@@ -318,7 +395,11 @@ public struct Track: Equatable, Identifiable, Sendable {
     public mutating func deleteEvent(at index: Int) {
         let end = terminatorIndex
         guard end > 0, index >= 0, index < end else { return }
-        replaceEvents(in: index..<(index + 1), with: [])
+        if let commentRange = commentRange(at: index) {
+            replaceEvents(in: commentRange, with: [])
+        } else {
+            replaceEvents(in: index..<(index + 1), with: [])
+        }
     }
 
     public mutating func updateAttributes(
@@ -414,6 +495,8 @@ extension TrackEvent {
         case 0xf8: return "]REP"
         case 0xfc: return "SAME"
         case 0xfd: return "MEAS"
+        case 0xf6: return "Comment"
+        case 0xf7: return ""
         default:
             return String(format: "%02X", command)
         }
