@@ -106,7 +106,6 @@ public final class PlaybackEngine: ObservableObject {
     }
 
     private func restoreHistory(_ restored: Song) {
-        audio.panic()
         isRestoringHistory = true
         song = restored
         title = restored.title
@@ -124,7 +123,19 @@ public final class PlaybackEngine: ObservableObject {
 
     public let audio = AudioUnitAdapter()
     private let runtime = PlaybackRuntime()
+    /// The most recently compiled editor snapshot. This may be newer than
+    /// the plan currently being rendered while a live edit waits for a bar
+    /// boundary.
     private var sequence: RCPSequence?
+    private var latestPlaybackPlan: PlaybackPlan?
+    private var playbackPlans: [Int: PlaybackPlan] = [:]
+    private var playbackRevision = 0
+    private var activePlanRevision = 0
+    private var activeSequence: RCPSequence?
+    private var activeTimelineOffset = 0.0
+    private var playbackBuildTask: Task<Void, Never>?
+    private var playbackBuildRequestID = 0
+    private var playbackBuildPending = false
     private var displayLink: Timer?
     private var pausedAt: Double = 0
     private var audioSetup: Task<Void, Error>?
@@ -138,7 +149,11 @@ public final class PlaybackEngine: ObservableObject {
 
     public var positionTick: Int {
         guard let song else { return 0 }
-        return sequence?.tick(atSeconds: positionSeconds)
+        let isRenderingPlan = state == .playing || state == .paused
+        let currentSequence = isRenderingPlan ? (activeSequence ?? sequence) : sequence
+        let offset = isRenderingPlan ? activeTimelineOffset : 0
+        let sequenceSeconds = max(0, positionSeconds - offset)
+        return currentSequence?.tick(atSeconds: sequenceSeconds)
             ?? Int((positionSeconds * Double(song.tempoBPM) * Double(song.timeBase) / 60.0).rounded(.down))
     }
 
@@ -358,7 +373,6 @@ public final class PlaybackEngine: ObservableObject {
     public func updateSongSettings(title: String, tempoBPM: Int, numerator: Int, denominator: Int) {
         guard var edited = song else { return }
         endEdit()
-        let tick = positionTick
         edited.title = String(title.prefix(64))
         edited.tempoBPM = min(255, max(1, tempoBPM))
         edited.beatNumerator = min(32, max(1, numerator))
@@ -366,9 +380,6 @@ public final class PlaybackEngine: ObservableObject {
         song = edited
         self.title = edited.title
         try? rebuildPlayback(resetPosition: false)
-        positionSeconds = sequence?.seconds(atTick: tick) ?? 0
-        pausedAt = positionSeconds
-        if state == .playing { runtime.play(from: positionSeconds) }
     }
 
     public var canAddTrack: Bool { (song?.tracks.count ?? 36) < 36 }
@@ -428,7 +439,6 @@ public final class PlaybackEngine: ObservableObject {
         edited.tracks.remove(at: index)
         song = edited
         if selectedTrackID == id { selectedTrackID = edited.tracks[min(index, edited.tracks.count - 1)].id }
-        audio.panic()
         try? rebuildPlayback(resetPosition: false)
     }
 
@@ -440,11 +450,32 @@ public final class PlaybackEngine: ObservableObject {
             try audio.start()
         }
         audioErrorMessage = nil
+
+        while playbackBuildPending {
+            guard let playbackBuildTask else { break }
+            await playbackBuildTask.value
+        }
+
+        // Pressing play while already playing is an explicit restart. Make
+        // that restart use the newest editor snapshot instead of a plan that
+        // may still be waiting for the next measure boundary.
+        if state == .playing, let latestPlaybackPlan {
+            audio.panic()
+            runtime.load(plan: latestPlaybackPlan)
+            adoptActivePlan(latestPlaybackPlan, timelineOffset: 0)
+        } else if state == .loaded,
+                  let latestPlaybackPlan,
+                  latestPlaybackPlan.revision != activePlanRevision {
+            runtime.load(plan: latestPlaybackPlan)
+            adoptActivePlan(latestPlaybackPlan, timelineOffset: 0)
+        }
+
+        let startSequence = activeSequence ?? sequence
         if let start = PlaybackStart.seconds(
             fromMeasure: measure,
             isPaused: state == .paused,
             song: song,
-            sequence: sequence
+            sequence: startSequence
         ) {
             pausedAt = start
         }
@@ -482,52 +513,258 @@ public final class PlaybackEngine: ObservableObject {
 
     public func pause() {
         guard state == .playing else { return }
-        pausedAt = runtime.pause()
+        let pausedPosition = runtime.pause()
+        let pausedTick = activeSequence?.tick(
+            atSeconds: max(0, pausedPosition - activeTimelineOffset)
+        ) ?? 0
         audio.panic()
         stopClock()
+
+        if let latestPlaybackPlan,
+           latestPlaybackPlan.revision != activePlanRevision {
+            runtime.replace(plan: latestPlaybackPlan, preservingTick: pausedTick)
+            adoptActivePlan(latestPlaybackPlan, timelineOffset: 0)
+            pausedAt = latestPlaybackPlan.sequence.seconds(atTick: pausedTick)
+            positionSeconds = pausedAt
+            songEndSeconds = latestPlaybackPlan.songEndSeconds
+        } else {
+            pausedAt = pausedPosition
+            positionSeconds = pausedPosition
+        }
         state = .paused
-        positionSeconds = pausedAt
     }
 
     public func stop() {
+        let needsLatestPlan = playbackBuildPending
+        invalidatePlaybackBuild()
         runtime.stop()
         audio.panic()
         stopClock()
         pausedAt = 0
         positionSeconds = 0
+        if let latestPlaybackPlan {
+            if runtime.snapshot().planRevision != latestPlaybackPlan.revision {
+                runtime.load(plan: latestPlaybackPlan)
+            }
+            adoptActivePlan(latestPlaybackPlan, timelineOffset: 0)
+        } else {
+            activeTimelineOffset = 0
+        }
         if song != nil {
             state = .loaded
         } else {
             state = .empty
         }
+        if needsLatestPlan {
+            try? rebuildPlayback(resetPosition: false)
+        }
     }
 
     private func rebuildPlayback(resetPosition: Bool) throws {
         guard let song else { return }
+        if state == .playing && !resetPosition {
+            schedulePlaybackBuild(from: song)
+            return
+        }
+
+        // A synchronous rebuild (for example, an edit made while paused)
+        // supersedes any asynchronous build that was started while playing.
+        invalidatePlaybackBuild()
+        let pausedTick: Int? = state == .paused
+            ? activeSequence?.tick(atSeconds: max(0, positionSeconds - activeTimelineOffset))
+            : nil
+
+        let plan = try makePlaybackPlan(from: song)
+        publishPlaybackPlan(plan, resetPosition: resetPosition, preservingTick: pausedTick)
+    }
+
+    private func makePlaybackPlan(from song: Song) throws -> PlaybackPlan {
+        let decoded: RCPSequence
         do {
-            let decoded = try song.playbackSequence()
-            sequence = decoded
-            songEndSeconds = decoded.songEndSeconds + decoded.lastBarSeconds
+            decoded = try song.playbackSequence()
         } catch RCPError.noEvents {
+            decoded = RCPSequence(
+                timeBase: song.timeBase,
+                tempoBPM: song.tempoBPM,
+                beatNumerator: song.beatNumerator,
+                beatDenominator: song.beatDenominator,
+                lastBarSeconds: 0,
+                events: []
+            )
+        }
+        return makePlaybackPlan(from: decoded)
+    }
+
+    private func schedulePlaybackBuild(from source: Song) {
+        playbackBuildRequestID += 1
+        let requestID = playbackBuildRequestID
+        playbackBuildPending = true
+        playbackBuildTask?.cancel()
+
+        playbackBuildTask = Task { [weak self] in
+            do {
+                try await Task.sleep(nanoseconds: 40_000_000)
+            } catch {
+                return
+            }
+            guard !Task.isCancelled else { return }
+
+            let result = await Task.detached(priority: .userInitiated) {
+                compilePlaybackSequence(source)
+            }.value
+
+            guard !Task.isCancelled else { return }
+            self?.finishPlaybackBuild(requestID: requestID, result: result)
+        }
+    }
+
+    private func finishPlaybackBuild(
+        requestID: Int,
+        result: Result<RCPSequence, RCPError>
+    ) {
+        guard requestID == playbackBuildRequestID else { return }
+        playbackBuildTask = nil
+        playbackBuildPending = false
+
+        let sequence: RCPSequence
+        switch result {
+        case .success(let compiled):
+            sequence = compiled
+        case .failure(.noEvents):
+            guard let song else { return }
             sequence = RCPSequence(
                 timeBase: song.timeBase,
                 tempoBPM: song.tempoBPM,
                 beatNumerator: song.beatNumerator,
                 beatDenominator: song.beatDenominator,
+                lastBarSeconds: 0,
                 events: []
             )
-            songEndSeconds = 0
+        case .failure(let error):
+            reportError(error)
+            return
         }
-        if let sequence {
-            runtime.load(sequence: sequence, songEnd: songEndSeconds)
-        } else {
-            runtime.load(events: [], songEnd: songEndSeconds)
-        }
+
+        let pausedTick: Int? = state == .paused
+            ? activeSequence?.tick(atSeconds: max(0, positionSeconds - activeTimelineOffset))
+            : nil
+        let plan = makePlaybackPlan(from: sequence)
+        publishPlaybackPlan(plan, resetPosition: false, preservingTick: pausedTick)
+    }
+
+    private func makePlaybackPlan(from sequence: RCPSequence) -> PlaybackPlan {
+        playbackRevision += 1
+        return PlaybackPlan(
+            revision: playbackRevision,
+            sequence: sequence,
+            songEndSeconds: sequence.songEndSeconds + sequence.lastBarSeconds
+        )
+    }
+
+    private func publishPlaybackPlan(
+        _ plan: PlaybackPlan,
+        resetPosition: Bool,
+        preservingTick pausedTick: Int?
+    ) {
+        registerPlaybackPlan(plan)
+
         if resetPosition {
+            runtime.load(plan: plan)
+            adoptActivePlan(plan, timelineOffset: 0)
             positionSeconds = 0
             pausedAt = 0
-        } else if state == .playing {
-            runtime.play(from: positionSeconds)
+            return
+        }
+
+        switch state {
+        case .playing:
+            // Do not replace the scheduler that is being rendered. The
+            // runtime queues this immutable plan for the next bar boundary.
+            runtime.queue(plan: plan)
+
+        case .paused:
+            let tick = pausedTick ?? 0
+            runtime.replace(plan: plan, preservingTick: tick)
+            adoptActivePlan(plan, timelineOffset: 0)
+            positionSeconds = plan.sequence.seconds(atTick: tick)
+            pausedAt = positionSeconds
+            songEndSeconds = plan.songEndSeconds
+
+        case .empty, .loaded:
+            runtime.load(plan: plan)
+            adoptActivePlan(plan, timelineOffset: 0)
+            positionSeconds = 0
+            pausedAt = 0
+        }
+    }
+
+    private func registerPlaybackPlan(_ plan: PlaybackPlan) {
+        sequence = plan.sequence
+        latestPlaybackPlan = plan
+        playbackPlans[plan.revision] = plan
+
+        // Keep the active plan and a small amount of recent history so the UI
+        // can adopt a plan that was switched by the render thread before the
+        // next main-actor clock tick arrives.
+        if playbackPlans.count > 8 {
+            let protected = Set([activePlanRevision, plan.revision])
+            for revision in playbackPlans.keys.sorted()
+                where playbackPlans.count > 4 && !protected.contains(revision) {
+                playbackPlans.removeValue(forKey: revision)
+            }
+        }
+    }
+
+    private func adoptActivePlan(_ plan: PlaybackPlan, timelineOffset: Double) {
+        activeSequence = plan.sequence
+        activePlanRevision = plan.revision
+        activeTimelineOffset = timelineOffset
+        songEndSeconds = max(0, plan.songEndSeconds + timelineOffset)
+    }
+
+    private func adoptActivePlanIfAvailable(
+        revision: Int,
+        timelineOffset: Double
+    ) {
+        guard let plan = playbackPlans[revision] else { return }
+        adoptActivePlan(plan, timelineOffset: timelineOffset)
+    }
+
+    private func updateActivePlanFromRuntime(
+        revision: Int,
+        timelineOffset: Double
+    ) {
+        adoptActivePlanIfAvailable(revision: revision, timelineOffset: timelineOffset)
+    }
+
+    private func updateActivePlanFromRuntimeSnapshot(
+        _ snapshot: (
+            position: Double,
+            playing: Bool,
+            finished: Bool,
+            planRevision: Int,
+            timelineOffset: Double
+        )
+    ) {
+        updateActivePlanFromRuntime(
+            revision: snapshot.planRevision,
+            timelineOffset: snapshot.timelineOffset
+        )
+    }
+
+    private func invalidatePlaybackBuild() {
+        playbackBuildRequestID += 1
+        playbackBuildTask?.cancel()
+        playbackBuildTask = nil
+        playbackBuildPending = false
+    }
+
+    private func tick() {
+        let snapshot = runtime.snapshot()
+        updateActivePlanFromRuntimeSnapshot(snapshot)
+        positionSeconds = snapshot.position
+        if snapshot.finished {
+            stop()
         }
     }
 
@@ -547,12 +784,18 @@ public final class PlaybackEngine: ObservableObject {
         displayLink = nil
     }
 
-    private func tick() {
-        let snapshot = runtime.snapshot()
-        positionSeconds = snapshot.position
-        if snapshot.finished {
-            stop()
-        }
+}
+
+private func compilePlaybackSequence(_ song: Song) -> Result<RCPSequence, RCPError> {
+    do {
+        return .success(try song.playbackSequence())
+    } catch let error as RCPError {
+        return .failure(error)
+    } catch {
+        // Song.playbackSequence currently reports only RCPError. Keep the
+        // worker's result typed and Sendable if that implementation grows a
+        // new throwing path later.
+        return .failure(.nonFiniteTime)
     }
 }
 
