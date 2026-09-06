@@ -10,6 +10,17 @@ import UIKit
 private enum TrackerPalette {
     static let crt = Color(red: 0.04, green: 0.055, blue: 0.09)
     static let phosphor = Color(red: 0.50, green: 0.91, blue: 0.88)
+    static let paper = Color.white
+    static let yellow = Color(red: 1.0, green: 0.92, blue: 0.28)
+    static let cyan = phosphor
+
+    static func ink(_ ink: TrackerInk) -> Color {
+        switch ink {
+        case .white: return paper
+        case .yellow: return yellow
+        case .cyan: return cyan
+        }
+    }
     static let dim = Color(red: 0.28, green: 0.55, blue: 0.54)
     static let cell = Color(red: 0.37, green: 0.88, blue: 0.84)
     static let playhead = Color(red: 0.12, green: 0.28, blue: 0.30)
@@ -23,6 +34,10 @@ private enum TrackerKeyBindings {
     static let directionalKeys: Set<KeyEquivalent> = [
         .upArrow, .downArrow, .leftArrow, .rightArrow
     ]
+    static let pageKeys: Set<KeyEquivalent> = [
+        .pageUp, .pageDown
+    ]
+    static let pageRows = 24
 }
 
 /// Character columns match STed2 `trk_dis`: MEAS 5, STEP 5, NOTE+K# 7, ST/GT/VEL 6.
@@ -30,8 +45,15 @@ private enum TrackerLayout {
     static let fontSize: CGFloat = 19.5
     static let headerFontSize: CGFloat = 16.5
     static let characterWidth = monospacedAdvance(fontSize)
-    static let rowHeight: CGFloat = 33
-    static let caretHeight: CGFloat = 27
+    static let cellHeight: CGFloat = {
+        #if os(macOS)
+        let font = NSFont.monospacedSystemFont(ofSize: fontSize, weight: .medium)
+        return ceil(font.ascender - font.descender + font.leading)
+        #else
+        return ceil(UIFont.monospacedSystemFont(ofSize: fontSize, weight: .medium).lineHeight)
+        #endif
+    }()
+    static let caretHeight: CGFloat = cellHeight - 2
 
     static let measWidth = width(5)
     static let stepWidth = width(5)
@@ -70,11 +92,21 @@ struct TrackEditorView: View {
     private enum InlineEditorOrigin: Equatable {
         case direct
         case insertedNote
+        case insertedSpecial
     }
 
     private enum InlineEditorKind: Equatable {
         case numeric(EventColumn)
         case note
+        case symbol
+        case special(SpecialControllerField)
+    }
+
+    private struct SpecialInsertSession: Equatable {
+        var row: Int
+        var code: SpecialControllerCode?
+        var fields: [SpecialControllerField]
+        var fieldIndex: Int
     }
 
     private struct InlineEditor: Equatable {
@@ -88,7 +120,8 @@ struct TrackEditorView: View {
         var column: EventColumn {
             switch kind {
             case .numeric(let column): return column
-            case .note: return .note
+            case .note, .symbol: return .note
+            case .special(let field): return SpecialController.column(for: field)
             }
         }
     }
@@ -100,7 +133,14 @@ struct TrackEditorView: View {
     @State private var inlineText = ""
     @State private var inlineEditorSessionID = 0
     @FocusState private var isKeyboardFocused: Bool
+    @FocusState private var isToneSelectorFocused: Bool
     @State private var isTrackSettingsPresented = false
+    @State private var specialInsert: SpecialInsertSession?
+    @State private var specialSelectorIndex = 0
+    @State private var isSpecialSelectorPresented = false
+    @State private var toneEditor: InlineEditor?
+    @State private var toneDraft = ""
+    @State private var toneIndex = 0
 
     private var track: Track? {
         engine.song?.tracks.first { $0.id == trackID }
@@ -155,6 +195,7 @@ struct TrackEditorView: View {
             isKeyboardFocused = true
         }
         .onChange(of: trackID) { _, _ in
+            toneEditor = nil
             resetInlineEditor()
             normalizeCursor()
             isKeyboardFocused = true
@@ -186,10 +227,24 @@ struct TrackEditorView: View {
                     .padding(.horizontal, 8)
 
                 trackerList(rows: rows)
+                    #if os(iOS)
                     .frame(height: max(160, geo.size.height * 0.48))
+                    #else
+                    .frame(maxHeight: .infinity)
+                    #endif
 
+                #if os(iOS)
                 inputDeck
                     .frame(maxHeight: .infinity)
+                #endif
+            }
+            .overlay {
+                if isSpecialSelectorPresented {
+                    specialSelectorOverlay
+                }
+                if toneEditor != nil {
+                    toneSelectorOverlay
+                }
             }
         }
         .focusable()
@@ -198,7 +253,28 @@ struct TrackEditorView: View {
         .onKeyPress(keys: TrackerKeyBindings.directionalKeys, phases: [.down, .repeat]) { press in
             return handleCursorKey(for: press.key, rowCount: rows.count)
         }
+        .onKeyPress(keys: TrackerKeyBindings.pageKeys, phases: [.down, .repeat]) { press in
+            switch press.key {
+            case .pageUp:
+                return handlePageKey(by: -TrackerKeyBindings.pageRows, rowCount: rows.count)
+            case .pageDown:
+                return handlePageKey(by: TrackerKeyBindings.pageRows, rowCount: rows.count)
+            default:
+                return .ignored
+            }
+        }
         .onKeyPress(.return, phases: .down) { _ in
+            if toneEditor != nil {
+                closeToneSelector(confirming: true)
+                return .handled
+            }
+            if isSpecialSelectorPresented {
+                confirmSpecialSelector()
+                return .handled
+            }
+            if inlineEditor?.origin == .insertedSpecial {
+                return handleSpecialInsertCommit()
+            }
             if inlineEditor != nil {
                 // `retkey(13)` in EDIT.C advances to the next row after
                 // committing the active field.
@@ -213,14 +289,44 @@ struct TrackEditorView: View {
             return .handled
         }
         .onKeyPress(.space, phases: .down) { _ in
-            // sinput() treats Space as the original right-column key when
-            // called from the track editor (exc & 1).
-            return handleCursorKey(for: .rightArrow, rowCount: rows.count)
+            if toneEditor != nil { return .handled }
+            if isSpecialSelectorPresented {
+                dismissSpecialSelector()
+                return .handled
+            }
+            if inlineEditor?.origin == .insertedSpecial {
+                return handleSpecialInsertCommit()
+            }
+            playFromCursorMeasure(track)
+            return .handled
         }
         .onKeyPress(keys: [.delete, .deleteForward], phases: .down) { press in
             return handleEditorCommandKey(press) ?? .ignored
         }
-        .onKeyPress(phases: .down) { press in
+        .onKeyPress(phases: [.down, .repeat]) { press in
+            if toneEditor != nil {
+                if TrackerKeyBindings.directionalKeys.contains(press.key) {
+                    return handleCursorKey(for: press.key, rowCount: rows.count)
+                }
+                if press.key == .return {
+                    closeToneSelector(confirming: true)
+                    return .handled
+                }
+                if press.key == .pageUp || press.key == .pageDown {
+                    toneIndex = ProgramToneList.moved(toneIndex, by: press.key == .pageUp ? -16 : 16)
+                    return .handled
+                }
+                if press.key == .escape || press.characters == "\u{1b}" {
+                    closeToneSelector(confirming: false)
+                }
+                return .handled
+            }
+            // Keep non-selector text entry single-shot. Held navigation keys
+            // are handled by the directional/page handlers above.
+            guard press.phase == .down else { return .ignored }
+            if isSpecialSelectorPresented {
+                return handleSpecialSelectorKey(press)
+            }
             if let result = handleEditorCommandKey(press) {
                 return result
             }
@@ -328,14 +434,18 @@ struct TrackEditorView: View {
     private func trackerRow(index: Int, row: EventRow) -> some View {
         let isSelected = cursor.row == index
         let isPlayhead = row.time.tick <= engine.positionTick
+        let ink = TrackerPalette.ink(row.ink)
         return HStack(spacing: 0) {
             Text(row.showsMeasure ? String(format: "%5d", row.time.measure) : "")
                 .lineLimit(1)
                 .frame(width: TrackerLayout.measWidth, alignment: .trailing)
+                .foregroundStyle(TrackerPalette.paper)
             Text(row.stepNumber.map { String(format: "%5d", $0) } ?? "")
                 .lineLimit(1)
                 .frame(width: TrackerLayout.stepWidth, alignment: .trailing)
+                .foregroundStyle(TrackerPalette.paper)
             Text(":")
+                .foregroundStyle(TrackerPalette.paper)
             if row.isMeasureLine || row.isTerminator {
                 Text(row.noteText)
                     .lineLimit(1)
@@ -344,25 +454,49 @@ struct TrackEditorView: View {
                     .foregroundStyle(
                         isSelected && cursor.column == .note
                             ? TrackerPalette.crt
-                            : TrackerPalette.phosphor
+                            : ink
                     )
                     .onTapGesture {
                         moveCursorToCell(row: index, column: .note)
                     }
             } else {
-                cell(TrackerColumn.note(row.noteText), column: .note, index: index, alignment: .leading)
+                cell(
+                    TrackerColumn.note(row.noteText),
+                    column: .note,
+                    index: index,
+                    alignment: .leading,
+                    ink: ink
+                )
                     .frame(width: TrackerLayout.noteWidth, alignment: .leading)
-                cell(TrackerColumn.value(row.stText), column: .st, index: index, alignment: .leading)
+                cell(
+                    TrackerColumn.value(row.stText),
+                    column: .st,
+                    index: index,
+                    alignment: .leading,
+                    ink: ink
+                )
                     .frame(width: TrackerLayout.valueWidth, alignment: .leading)
-                cell(TrackerColumn.value(row.gtText), column: .gt, index: index, alignment: .leading)
+                cell(
+                    TrackerColumn.value(row.gtText),
+                    column: .gt,
+                    index: index,
+                    alignment: .leading,
+                    ink: ink
+                )
                     .frame(width: TrackerLayout.valueWidth, alignment: .leading)
-                cell(TrackerColumn.value(row.velText), column: .vel, index: index, alignment: .leading)
+                cell(
+                    TrackerColumn.value(row.velText),
+                    column: .vel,
+                    index: index,
+                    alignment: .leading,
+                    ink: ink
+                )
                     .frame(width: TrackerLayout.valueWidth, alignment: .leading)
             }
             Spacer(minLength: 0)
         }
         .font(TrackerLayout.rowFont)
-        .foregroundStyle(TrackerPalette.phosphor)
+        .frame(height: TrackerLayout.cellHeight)
         .padding(.horizontal, 4)
         .padding(.vertical, 3)
         .background {
@@ -391,7 +525,8 @@ struct TrackEditorView: View {
         _ text: String,
         column: EventColumn,
         index: Int,
-        alignment: Alignment
+        alignment: Alignment,
+        ink: Color
     ) -> some View {
         let active = cursor.row == index && cursor.column == column
         if let inlineEditor,
@@ -410,7 +545,7 @@ struct TrackEditorView: View {
                 .lineLimit(1)
                 .frame(maxWidth: .infinity, alignment: alignment)
                 .background(active ? TrackerPalette.cell : Color.clear)
-                .foregroundStyle(active ? TrackerPalette.crt : TrackerPalette.phosphor)
+                .foregroundStyle(active ? TrackerPalette.crt : ink)
                 .onTapGesture {
                     moveCursorToCell(row: index, column: column)
                 }
@@ -444,6 +579,15 @@ struct TrackEditorView: View {
             return .numeric
         case .note:
             return .note
+        case .symbol:
+            return .symbol
+        case .special(let field):
+            switch field {
+            case .pitchBend:
+                return .pitch
+            case .stepTime, .gateTime, .velocity, .midiChannel:
+                return .numeric
+            }
         }
     }
 
@@ -534,6 +678,7 @@ struct TrackEditorView: View {
     }
 
     private func handleEditorCommandKey(_ press: KeyPress) -> KeyPress.Result? {
+        guard toneEditor == nil else { return .handled }
         guard let key = trackerEditorKey(from: press),
               let command = TrackerEditorKeyMap.command(
                 for: key,
@@ -549,6 +694,9 @@ struct TrackEditorView: View {
             return .handled
         case .insertMeasureLine:
             insertMeasureLine()
+            return .handled
+        case .insertSpecialController:
+            insertSpecialController()
             return .handled
         }
     }
@@ -579,6 +727,24 @@ struct TrackEditorView: View {
         }
 
         guard let direction else { return .ignored }
+        if toneEditor != nil {
+            switch direction {
+            case .up: toneIndex = ProgramToneList.moved(toneIndex, by: -1)
+            case .down: toneIndex = ProgramToneList.moved(toneIndex, by: 1)
+            case .left: toneIndex = ProgramToneList.moved(toneIndex, by: -16)
+            case .right: toneIndex = ProgramToneList.moved(toneIndex, by: 16)
+            }
+            return .handled
+        }
+        if direction == .down, openToneSelectorIfNeeded() {
+            return .handled
+        }
+        if isSpecialSelectorPresented {
+            return handleSpecialSelectorDirection(direction)
+        }
+        if let inlineEditor, inlineEditor.origin == .insertedSpecial {
+            return handleInsertedSpecialNavigation(direction: direction)
+        }
         if let inlineEditor, inlineEditor.origin == .insertedNote {
             return handleInsertedEditorNavigation(
                 direction: direction,
@@ -592,6 +758,20 @@ struct TrackEditorView: View {
         if selectDestination && wasEditing && beginEditorAtCursor(selectAll: true) {
             return .handled
         }
+        isKeyboardFocused = true
+        return .handled
+    }
+
+    private func handlePageKey(by delta: Int, rowCount: Int) -> KeyPress.Result {
+        if toneEditor != nil {
+            toneIndex = ProgramToneList.moved(toneIndex, by: delta < 0 ? -16 : 16)
+            return .handled
+        }
+        if isSpecialSelectorPresented {
+            return .handled
+        }
+        finishInlineEditorBeforeNavigation()
+        cursor.page(by: delta, rowCount: rowCount)
         isKeyboardFocused = true
         return .handled
     }
@@ -611,6 +791,12 @@ struct TrackEditorView: View {
                     row: editor.row,
                     column: .st,
                     selectAll: true
+                )
+            case .symbol, .special:
+                return finishInsertedEditorAndMove(
+                    .right,
+                    rowCount: rowCount,
+                    selectDestination: selectDestination
                 )
             case .numeric(let column):
                 switch column {
@@ -639,6 +825,12 @@ struct TrackEditorView: View {
         case .left:
             switch editor.kind {
             case .note:
+                return finishInsertedEditorAndMove(
+                    .left,
+                    rowCount: rowCount,
+                    selectDestination: selectDestination
+                )
+            case .symbol, .special:
                 return finishInsertedEditorAndMove(
                     .left,
                     rowCount: rowCount,
@@ -740,6 +932,10 @@ struct TrackEditorView: View {
 
     private func finishInlineEditorBeforeNavigation() {
         guard inlineEditor != nil else { return }
+        if inlineEditor?.origin == .insertedSpecial {
+            _ = handleSpecialInsertCommit()
+            return
+        }
         commitInlineEditor()
     }
 
@@ -760,25 +956,23 @@ struct TrackEditorView: View {
     private func beginEditorAtCursor(selectAll: Bool) -> Bool {
         guard let track,
               track.events.indices.contains(cursor.row),
-              cursor.row < track.terminatorIndex,
-              track.events[cursor.row].command < 0x80
+              cursor.row < track.terminatorIndex
         else { return false }
 
-        switch cursor.column {
-        case .note:
+        let event = track.events[cursor.row]
+        if cursor.column == .note, event.command < 0x80 {
             return beginNoteEdit(
-                initialText: track.events[cursor.row].noteInputText,
-                selectAll: selectAll
-            )
-        case .st, .gt, .vel:
-            guard let value = track.events[cursor.row].numericValue(in: cursor.column) else {
-                return false
-            }
-            return beginNumericEdit(
-                value == 0 ? "" : String(value),
+                initialText: event.noteInputText,
                 selectAll: selectAll
             )
         }
+
+        let action = TrackerNumericEditAction.forCommand(event.command, column: cursor.column)
+        guard let value = event.editorValue(for: action) else { return false }
+        return beginNumericEdit(
+            value == 0 ? "" : String(value),
+            selectAll: selectAll
+        )
     }
 
     private func insertNoteBeforeCursor() {
@@ -817,20 +1011,42 @@ struct TrackEditorView: View {
         guard let track else { return false }
         let index = cursor.row
         guard track.events.indices.contains(index),
-              index < track.terminatorIndex,
-              track.events[index].command < 0x80
+              index < track.terminatorIndex
         else { return false }
 
-        inlineText = TrackerTextInput.normalizedNumeric(initialText)
-        inlineEditorSessionID += 1
-        inlineEditor = InlineEditor(
-            row: index,
-            kind: .numeric(cursor.column),
-            origin: origin,
-            sessionID: inlineEditorSessionID,
-            selectsText: selectAll,
-            copiedNotePreview: nil
-        )
+        let event = track.events[index]
+        let action = TrackerNumericEditAction.forCommand(event.command, column: cursor.column)
+        switch action {
+        case .ignore:
+            return false
+        case .edit(let column):
+            cursor.column = column
+            inlineText = TrackerTextInput.normalizedNumeric(initialText)
+            inlineEditorSessionID += 1
+            inlineEditor = InlineEditor(
+                row: index,
+                kind: .numeric(column),
+                origin: origin,
+                sessionID: inlineEditorSessionID,
+                selectsText: selectAll,
+                copiedNotePreview: nil
+            )
+        case .editPitchBend:
+            cursor.column = .vel
+            inlineText = TrackerTextInput.normalizedNumeric(
+                initialText,
+                maximumLength: TrackerTextInput.symbolMaximumLength
+            )
+            inlineEditorSessionID += 1
+            inlineEditor = InlineEditor(
+                row: index,
+                kind: .special(.pitchBend),
+                origin: origin,
+                sessionID: inlineEditorSessionID,
+                selectsText: selectAll,
+                copiedNotePreview: nil
+            )
+        }
         isKeyboardFocused = false
         return true
     }
@@ -900,11 +1116,15 @@ struct TrackEditorView: View {
     }
 
     private func commitInlineEditor(text draftText: String? = nil) {
+        if inlineEditor?.origin == .insertedSpecial {
+            _ = handleSpecialInsertCommit()
+            return
+        }
+
         guard let inlineEditor,
               let track,
               track.events.indices.contains(inlineEditor.row),
-              inlineEditor.row < track.terminatorIndex,
-              track.events[inlineEditor.row].command < 0x80
+              inlineEditor.row < track.terminatorIndex
         else {
             cancelInlineEditor()
             return
@@ -912,23 +1132,40 @@ struct TrackEditorView: View {
 
         let event = track.events[inlineEditor.row]
         let draftText = draftText ?? inlineText
-        let value: Int?
+        let updated: TrackEvent?
         switch inlineEditor.kind {
         case .numeric(let column):
-            value = TrackerTextInput.numericValue(draftText, in: column)
+            let range = TrackerNumericEditAction.range(command: event.command, column: column)
+            let value = TrackerTextInput.numericValue(draftText, in: range)
+            updated = value.map { event.settingEditorValue($0, action: .edit(column)) }
         case .note:
-            value = TrackerTextInput.noteNumber(
+            guard event.command < 0x80 else {
+                cancelInlineEditor()
+                return
+            }
+            let value = TrackerTextInput.noteNumber(
                 draftText,
                 referenceNote: Int(event.command)
             )
+            updated = value.map { event.settingNumericValue($0, in: .note) }
+        case .special(.pitchBend):
+            let range = TrackerNumericEditAction.range(command: 0xee, column: .vel)
+            let value = TrackerTextInput.numericValue(
+                draftText,
+                in: range,
+                maximumLength: TrackerTextInput.symbolMaximumLength
+            )
+            updated = value.map { event.settingEditorValue($0, action: .editPitchBend) }
+        case .symbol, .special:
+            cancelInlineEditor()
+            return
         }
 
-        if let value {
-            let column = inlineEditor.column
+        if let updated {
             engine.updateEvent(
                 trackID: trackID,
                 index: inlineEditor.row,
-                event.settingNumericValue(value, in: column)
+                updated
             )
         }
         resetInlineEditor()
@@ -936,8 +1173,13 @@ struct TrackEditorView: View {
     }
 
     private func cancelInlineEditor() {
+        toneEditor = nil
         let editor = inlineEditor
-        switch TrackerInlineCancelAction.forInsertedNote(editor?.origin == .insertedNote) {
+        isSpecialSelectorPresented = false
+        specialInsert = nil
+        switch TrackerInlineCancelAction.forInsertedNote(
+            editor?.origin == .insertedNote || editor?.origin == .insertedSpecial
+        ) {
         case .deleteInsertedStep:
             if let row = editor?.row {
                 cursor.row = row
@@ -953,6 +1195,426 @@ struct TrackEditorView: View {
     private func resetInlineEditor() {
         inlineEditor = nil
         inlineText = ""
+    }
+
+    private func insertSpecialController() {
+        guard let track else { return }
+        resetInlineEditor()
+        isSpecialSelectorPresented = false
+        let index = min(max(0, cursor.row), track.terminatorIndex)
+        engine.insertEvent(trackID: trackID, at: index, .specialControllerPlaceholder)
+        cursor = TrackCursor(row: index, column: .note)
+        specialInsert = SpecialInsertSession(row: index, code: nil, fields: [], fieldIndex: 0)
+        beginSpecialSymbolEdit(at: index)
+    }
+
+    private func beginSpecialSymbolEdit(at index: Int) {
+        cursor = TrackCursor(row: index, column: .note)
+        inlineText = ""
+        inlineEditorSessionID += 1
+        inlineEditor = InlineEditor(
+            row: index,
+            kind: .symbol,
+            origin: .insertedSpecial,
+            sessionID: inlineEditorSessionID,
+            selectsText: false,
+            copiedNotePreview: nil
+        )
+        isKeyboardFocused = false
+    }
+
+    private func handleInsertedSpecialNavigation(
+        direction: TrackCursorDirection
+    ) -> KeyPress.Result {
+        guard let editor = inlineEditor else { return .ignored }
+        switch editor.kind {
+        case .symbol:
+            if SpecialController.symbolInputAction(forDownArrow: direction == .down) == .openSelector {
+                openSpecialSelector()
+                return .handled
+            }
+            return handleSpecialInsertCommit()
+        case .special, .numeric, .note:
+            return handleSpecialInsertCommit()
+        }
+    }
+
+    private func handleSpecialInsertCommit() -> KeyPress.Result {
+        guard let editor = inlineEditor, editor.origin == .insertedSpecial else {
+            return .ignored
+        }
+        switch editor.kind {
+        case .symbol:
+            commitSpecialSymbol(inlineText)
+        case .special:
+            commitSpecialField(inlineText)
+        case .numeric, .note:
+            commitSpecialField(inlineText)
+        }
+        return .handled
+    }
+
+    private func commitSpecialSymbol(_ text: String) {
+        // An empty symbol is a request to choose an event, not a cancelled insert.
+        // In particular, Right advances from this field just like Return.
+        if text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            openSpecialSelector()
+            return
+        }
+        guard let session = specialInsert else {
+            cancelInlineEditor()
+            return
+        }
+        guard let code = SpecialController.code(from: text) else {
+            cancelSpecialInsert()
+            return
+        }
+        applySpecialCode(code, at: session.row)
+    }
+
+    private func applySpecialCode(_ code: SpecialControllerCode, at index: Int) {
+        guard let track, track.events.indices.contains(index) else {
+            cancelSpecialInsert()
+            return
+        }
+        let event = SpecialController.makeEvent(
+            code,
+            previousEvents: track.events.prefix(index),
+            trackMIDIChannel: track.midiChannel
+        )
+        engine.updateEvent(trackID: trackID, index: index, event)
+        let fields = SpecialController.fields(for: code)
+        specialInsert = SpecialInsertSession(
+            row: index,
+            code: code,
+            fields: fields,
+            fieldIndex: 0
+        )
+        resetInlineEditor()
+        beginNextSpecialField()
+    }
+
+    private func beginNextSpecialField() {
+        guard var session = specialInsert else { return }
+        guard session.fieldIndex < session.fields.count else {
+            finishSpecialInsert()
+            return
+        }
+        let field = session.fields[session.fieldIndex]
+        session.fieldIndex += 1
+        specialInsert = session
+        cursor = TrackCursor(row: session.row, column: SpecialController.column(for: field))
+        let initialText = specialFieldInitialText(field, row: session.row)
+        inlineText = initialText
+        inlineEditorSessionID += 1
+        inlineEditor = InlineEditor(
+            row: session.row,
+            kind: .special(field),
+            origin: .insertedSpecial,
+            sessionID: inlineEditorSessionID,
+            selectsText: true,
+            copiedNotePreview: nil
+        )
+        isKeyboardFocused = false
+    }
+
+    private func specialFieldInitialText(_ field: SpecialControllerField, row: Int) -> String {
+        guard let track, track.events.indices.contains(row) else { return "" }
+        let event = track.events[row]
+        switch field {
+        case .stepTime:
+            return event.delay == 0 ? "" : "\(event.delay)"
+        case .gateTime:
+            let displayed = event.command == 0xeb ? Int(event.param1 & 127) : Int(event.param1)
+            return displayed == 0 ? "" : "\(displayed)"
+        case .midiChannel:
+            return event.param1 == 0 ? "" : "\(event.param1)"
+        case .velocity:
+            return event.param2 == 0 ? "" : "\(event.param2)"
+        case .pitchBend:
+            let bend = SpecialController.pitchValue(param1: event.param1, param2: event.param2)
+            return bend == 0 ? "" : "\(bend)"
+        }
+    }
+
+    private func commitSpecialField(_ text: String) {
+        guard let editor = inlineEditor,
+              case .special(let field) = editor.kind,
+              let track,
+              track.events.indices.contains(editor.row)
+        else {
+            cancelSpecialInsert()
+            return
+        }
+        var event = track.events[editor.row]
+        let range = SpecialController.numericRange(for: field)
+        let maximumLength = field == .pitchBend
+            ? TrackerTextInput.symbolMaximumLength
+            : TrackerTextInput.maximumLength
+        let value = TrackerTextInput.numericValue(
+            text,
+            in: range,
+            maximumLength: maximumLength
+        ) ?? range.lowerBound
+
+        switch field {
+        case .stepTime:
+            event.delay = UInt8(clamping: value)
+        case .gateTime, .midiChannel:
+            event.param1 = UInt8(clamping: value)
+        case .velocity:
+            event.param2 = UInt8(clamping: value)
+        case .pitchBend:
+            event = SpecialController.pitchBendEvent(delay: event.delay, bend: value)
+        }
+        engine.updateEvent(trackID: trackID, index: editor.row, event)
+        resetInlineEditor()
+        beginNextSpecialField()
+    }
+
+    private func finishSpecialInsert() {
+        let row = specialInsert?.row ?? cursor.row
+        specialInsert = nil
+        isSpecialSelectorPresented = false
+        resetInlineEditor()
+        cursor = TrackCursor(row: row, column: .note)
+        if let track {
+            let rowCount = track.eventRows(
+                timeBase: engine.song?.timeBase ?? 48,
+                beatNumerator: engine.song?.beatNumerator ?? 4,
+                beatDenominator: engine.song?.beatDenominator ?? 4
+            ).count
+            cursor.move(.down, rowCount: rowCount)
+        }
+        isKeyboardFocused = true
+    }
+
+    private func cancelSpecialInsert() {
+        isSpecialSelectorPresented = false
+        specialInsert = nil
+        cancelInlineEditor()
+    }
+
+    private func openSpecialSelector() {
+        resetInlineEditor()
+        specialSelectorIndex = 0
+        isSpecialSelectorPresented = true
+        isKeyboardFocused = true
+    }
+
+    private func confirmSpecialSelector() {
+        guard let symbol = SpecialController.selectorSymbol(
+            at: specialSelectorIndex,
+            confirming: true
+        ) else { return }
+        isSpecialSelectorPresented = false
+        commitSpecialSymbol(symbol)
+    }
+
+    private func dismissSpecialSelector() {
+        isSpecialSelectorPresented = false
+        if let row = specialInsert?.row {
+            beginSpecialSymbolEdit(at: row)
+        } else {
+            isKeyboardFocused = true
+        }
+    }
+
+    private func handleSpecialSelectorKey(_ press: KeyPress) -> KeyPress.Result {
+        switch press.key {
+        case .escape:
+            dismissSpecialSelector()
+            return .handled
+        case .return:
+            confirmSpecialSelector()
+            return .handled
+        case .space:
+            dismissSpecialSelector()
+            return .handled
+        default:
+            break
+        }
+        let characters = press.characters.uppercased()
+        if press.characters == "\u{1b}" {
+            dismissSpecialSelector()
+            return .handled
+        }
+        if characters.count == 1, let character = characters.first, character.isLetter {
+            if let index = SpecialController.selectorItems.prefix(18).firstIndex(where: {
+                $0.symbol.first == character
+            }) {
+                specialSelectorIndex = index
+                return .handled
+            }
+        }
+        return .ignored
+    }
+
+    private func handleSpecialSelectorDirection(_ direction: TrackCursorDirection) -> KeyPress.Result {
+        switch direction {
+        case .up:
+            specialSelectorIndex = SpecialController.nextSelectorIndex(from: specialSelectorIndex, movingDown: false)
+        case .down:
+            specialSelectorIndex = SpecialController.nextSelectorIndex(from: specialSelectorIndex, movingDown: true)
+        case .left, .right:
+            dismissSpecialSelector()
+        }
+        return .handled
+    }
+
+    private func openToneSelectorIfNeeded() -> Bool {
+        guard let editor = inlineEditor, editor.column == .gt,
+              let track, track.events.indices.contains(editor.row),
+              track.events[editor.row].command == 0xec || track.events[editor.row].command == 0xe2
+        else { return false }
+        toneEditor = editor
+        toneDraft = inlineText
+        toneIndex = inlineText.isEmpty
+            ? Int(track.events[editor.row].param1)
+            : TrackerTextInput.numericValue(inlineText, in: 0...127) ?? 0
+        toneIndex = min(127, toneIndex)
+        resetInlineEditor()
+        isKeyboardFocused = true
+        return true
+    }
+
+    private func closeToneSelector(confirming: Bool) {
+        guard let editor = toneEditor else { return }
+        isToneSelectorFocused = false
+        isKeyboardFocused = false
+        toneEditor = nil
+        inlineEditorSessionID += 1
+        inlineEditor = InlineEditor(
+            row: editor.row, kind: editor.kind, origin: editor.origin,
+            sessionID: inlineEditorSessionID, selectsText: true, copiedNotePreview: nil
+        )
+        inlineText = confirming ? String(toneIndex) : toneDraft
+        if confirming {
+            if editor.origin == .insertedSpecial {
+                commitSpecialField(inlineText)
+            } else {
+                commitInlineEditor()
+            }
+        } else {
+            isKeyboardFocused = false
+        }
+        // Restore focus after the selector's focusable view has been removed.
+        if inlineEditor == nil {
+            DispatchQueue.main.async {
+                isKeyboardFocused = true
+            }
+        }
+    }
+
+    private var toneSelectorOverlay: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("TONE LIST")
+                .font(TrackerLayout.headerFont)
+            Text("GM / SC-55 CAPITAL · 0–127")
+                .font(.caption)
+            ScrollViewReader { proxy in
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 2) {
+                        ForEach(ProgramToneList.names.indices, id: \.self) { index in
+                            Button {
+                                toneIndex = index
+                                closeToneSelector(confirming: true)
+                            } label: {
+                                Text(String(format: "%3d: %@", index, ProgramToneList.names[index]))
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .padding(.vertical, 2)
+                                    .foregroundStyle(index == toneIndex ? TrackerPalette.crt : TrackerPalette.paper)
+                                    .background(index == toneIndex ? TrackerPalette.cell : Color.clear)
+                            }
+                            .buttonStyle(.plain)
+                            .id(index)
+                        }
+                    }
+                }
+                .onAppear { proxy.scrollTo(toneIndex, anchor: .center) }
+                .onChange(of: toneIndex) { _, index in proxy.scrollTo(index, anchor: .center) }
+            }
+            Text("↑↓ 選択  ←→ 16音色移動  Enter 決定  Esc 戻る")
+                .font(.caption)
+        }
+        .font(TrackerLayout.rowFont)
+        .foregroundStyle(TrackerPalette.paper)
+        .padding(12)
+        .frame(maxWidth: 420, maxHeight: 560)
+        .background(TrackerPalette.crt)
+        .overlay(RoundedRectangle(cornerRadius: 4).stroke(TrackerPalette.phosphor))
+        .padding(16)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
+        .background {
+            Color.black.opacity(0.35)
+                .onTapGesture { closeToneSelector(confirming: false) }
+        }
+        .focusable()
+        .focused($isToneSelectorFocused)
+        .focusEffectDisabled()
+        .onAppear { isToneSelectorFocused = true }
+        .onKeyPress(phases: [.down, .repeat]) { press in
+            switch press.key {
+            case .upArrow: toneIndex = ProgramToneList.moved(toneIndex, by: -1)
+            case .downArrow: toneIndex = ProgramToneList.moved(toneIndex, by: 1)
+            case .leftArrow, .pageUp: toneIndex = ProgramToneList.moved(toneIndex, by: -16)
+            case .rightArrow, .pageDown: toneIndex = ProgramToneList.moved(toneIndex, by: 16)
+            case .return: closeToneSelector(confirming: true)
+            case .escape: closeToneSelector(confirming: false)
+            default: break
+            }
+            return .handled
+        }
+    }
+
+    private var specialSelectorOverlay: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(" SPECIAL CONTROLER")
+                .font(TrackerLayout.headerFont)
+                .foregroundStyle(TrackerPalette.paper)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.bottom, 4)
+            ForEach(Array(SpecialController.selectorItems.enumerated()), id: \.offset) { index, item in
+                if item.symbol.isEmpty {
+                    Rectangle()
+                        .fill(TrackerPalette.dim.opacity(0.5))
+                        .frame(height: 1)
+                        .padding(.vertical, 4)
+                        .allowsHitTesting(false)
+                        .accessibilityHidden(true)
+                } else {
+                    let selected = index == specialSelectorIndex
+                    HStack(spacing: 6) {
+                        Text(item.symbol.isEmpty ? "   " : "[\(item.symbol)]")
+                            .frame(width: TrackerLayout.width(5), alignment: .leading)
+                        Text(item.name)
+                            .frame(width: TrackerLayout.width(9), alignment: .leading)
+                        Text(item.comment)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .font(TrackerLayout.rowFont)
+                    .foregroundStyle(selected ? TrackerPalette.crt : TrackerPalette.paper)
+                    .background(selected ? TrackerPalette.cell : Color.clear)
+                    .contentShape(Rectangle())
+                    .onTapGesture {
+                        specialSelectorIndex = index
+                        confirmSpecialSelector()
+                    }
+                }
+            }
+        }
+        .padding(12)
+        .background(TrackerPalette.crt.opacity(0.96))
+        .overlay(
+            RoundedRectangle(cornerRadius: 4)
+                .stroke(TrackerPalette.phosphor, lineWidth: 1)
+        )
+        .padding(16)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
+        .background {
+            Color.black.opacity(0.35)
+                .onTapGesture { dismissSpecialSelector() }
+        }
     }
 
     private func keyboardNoteCharacter(from press: KeyPress) -> Character? {
@@ -971,6 +1633,17 @@ struct TrackEditorView: View {
               (0...9).contains(digit)
         else { return nil }
         return digit
+    }
+
+    private func playFromCursorMeasure(_ track: Track) {
+        let measure = cursorMeasure(track)
+        Task {
+            do {
+                try await engine.play(fromMeasure: measure)
+            } catch {
+                engine.reportAudioError(error)
+            }
+        }
     }
 
     private func cursorMeasure(_ track: Track) -> Int {
@@ -994,8 +1667,11 @@ struct TrackEditorView: View {
 
 private struct TrackerInlineEditorField: View {
     private static let characterWidth = TrackerLayout.characterWidth
-    private static let bufferWidth = CGFloat(TrackerTextInput.maximumLength) * characterWidth
-    private static let fieldHeight = TrackerLayout.rowHeight
+    private static let fieldHeight = TrackerLayout.cellHeight
+
+    private var bufferWidth: CGFloat {
+        CGFloat(TrackerTextInput.maximumLength(for: mode)) * Self.characterWidth
+    }
 
     let mode: TrackerTextInputMode
     let copiedNotePreview: String?
@@ -1064,7 +1740,7 @@ private struct TrackerInlineEditorField: View {
                         Spacer(minLength: 0)
                     }
                 }
-                .frame(width: Self.bufferWidth, alignment: .leading)
+                .frame(width: bufferWidth, alignment: .leading)
 
                 Rectangle()
                     .fill(Color.white)
@@ -1074,9 +1750,9 @@ private struct TrackerInlineEditorField: View {
             }
             .font(TrackerLayout.rowFont)
             .foregroundStyle(TrackerPalette.crt)
-            .frame(width: Self.bufferWidth, height: Self.fieldHeight, alignment: .leading)
+            .frame(width: bufferWidth, height: Self.fieldHeight, alignment: .leading)
         }
-        .frame(width: Self.bufferWidth, height: Self.fieldHeight)
+        .frame(width: bufferWidth, height: Self.fieldHeight)
         .padding(.horizontal, 2)
         .background(TrackerPalette.cell)
         .focusable()
@@ -1092,7 +1768,7 @@ private struct TrackerInlineEditorField: View {
                 return .handled
             case .return:
                 return .ignored
-            case .upArrow, .downArrow, .leftArrow, .rightArrow, .space:
+            case .upArrow, .downArrow, .leftArrow, .rightArrow, .space, .pageUp, .pageDown:
                 return .ignored
             case .home:
                 hasDismissedPreview = true
@@ -1162,7 +1838,7 @@ private struct TrackerInlineEditorField: View {
 
     private var leadingEmptySlots: Int {
         isTrailing
-            ? max(0, TrackerTextInput.maximumLength - input.text.count)
+            ? max(0, TrackerTextInput.maximumLength(for: mode) - input.text.count)
             : 0
     }
 }

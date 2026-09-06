@@ -14,7 +14,7 @@ struct TransportBar: View {
     var body: some View {
         HStack(spacing: isCompact ? 8 : 12) {
             Button("Play", action: play)
-                .disabled(engine.state == .empty || engine.state == .playing)
+                .disabled(engine.state == .empty)
             Button("Pause", action: engine.pause)
                 .disabled(engine.state != .playing)
             Button("Stop", action: engine.stop)

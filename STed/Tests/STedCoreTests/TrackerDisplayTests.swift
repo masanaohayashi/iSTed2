@@ -2,6 +2,34 @@ import XCTest
 @testable import STedCore
 
 final class TrackerDisplayTests: XCTestCase {
+    func testTrackerInkMatchesOriginalHPrintColors() {
+        XCTAssertEqual(
+            TrackEvent(command: 60, delay: 48, param1: 36, param2: 100).trackerInk,
+            .white
+        )
+        XCTAssertEqual(
+            TrackEvent(command: 64, delay: 0, param1: 36, param2: 100).trackerInk,
+            .yellow
+        )
+        XCTAssertEqual(
+            TrackEvent(command: 0xeb, delay: 1, param1: 93, param2: 50).trackerInk,
+            .cyan
+        )
+        XCTAssertEqual(
+            TrackEvent(command: 0xfc, delay: 0, param1: 0, param2: 0).trackerInk,
+            .cyan
+        )
+        XCTAssertEqual(TrackEvent.measureLine.trackerInk, .white)
+        XCTAssertEqual(
+            TrackEvent(command: 0xfe, delay: 0, param1: 0, param2: 0).trackerInk,
+            .white
+        )
+        XCTAssertEqual(
+            TrackEvent(command: 0xf6, delay: 0, param1: 0, param2: 0).trackerInk,
+            .white
+        )
+    }
+
     func testNoteCellsMatchSTEDLayout() {
         let event = TrackEvent(command: 36, delay: 12, param1: 8, param2: 70)
         let cells = event.trackerCells

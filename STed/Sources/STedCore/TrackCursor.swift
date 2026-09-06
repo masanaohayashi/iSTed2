@@ -39,4 +39,10 @@ public struct TrackCursor: Equatable, Sendable {
             }
         }
     }
+
+    public mutating func page(by delta: Int, rowCount: Int) {
+        let lastRow = max(0, rowCount - 1)
+        row = min(max(0, row), lastRow)
+        row = min(max(0, row + delta), lastRow)
+    }
 }

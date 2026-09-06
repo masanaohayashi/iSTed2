@@ -45,8 +45,21 @@ public struct NumericInput: Equatable, Sendable {
 /// parsed by `ctc` using the current note as the octave fallback.
 public enum TrackerTextInput {
     public static let maximumLength = 4
+    public static let symbolMaximumLength = 5
 
-    public static func normalizedNumeric(_ text: String) -> String {
+    public static func maximumLength(for mode: TrackerTextInputMode) -> Int {
+        switch mode {
+        case .numeric, .note:
+            return maximumLength
+        case .symbol, .pitch:
+            return symbolMaximumLength
+        }
+    }
+
+    public static func normalizedNumeric(
+        _ text: String,
+        maximumLength: Int = maximumLength
+    ) -> String {
         var result = ""
         for character in text {
             if result.isEmpty, character == "-" {
@@ -66,10 +79,17 @@ public enum TrackerTextInput {
         _ text: String,
         in column: EventColumn
     ) -> Int? {
-        let normalized = normalizedNumeric(text)
+        numericValue(text, in: column.numericRange)
+    }
+
+    public static func numericValue(
+        _ text: String,
+        in range: ClosedRange<Int>,
+        maximumLength: Int = maximumLength
+    ) -> Int? {
+        let normalized = normalizedNumeric(text, maximumLength: maximumLength)
         guard !normalized.isEmpty, normalized != "-" else { return 0 }
         guard let value = Int(normalized) else { return nil }
-        let range = column.numericRange
         return min(range.upperBound, max(range.lowerBound, value))
     }
 
@@ -78,6 +98,13 @@ public enum TrackerTextInput {
             (32...126).contains($0.value)
         }
         return String(String.UnicodeScalarView(printable).prefix(maximumLength))
+    }
+
+    public static func normalizedSymbol(_ text: String) -> String {
+        let printable = text.uppercased().unicodeScalars.filter {
+            (32...126).contains($0.value)
+        }
+        return String(String.UnicodeScalarView(printable).prefix(symbolMaximumLength))
     }
 
     /// Parses the note-name syntax used by STed2's `ctc` function.
@@ -130,6 +157,8 @@ public enum TrackerTextInput {
 public enum TrackerTextInputMode: Equatable, Sendable {
     case numeric
     case note
+    case symbol
+    case pitch
 }
 
 public enum TrackerTextInputCommand: Equatable, Sendable {
@@ -150,6 +179,7 @@ public enum TrackerEditorKey: Equatable, Sendable {
     case backspaceCharacter
     case forwardDeleteCharacter
     case insertMeasureLine
+    case insertSpecialController
 
     public init?(characters: String) {
         switch characters {
@@ -159,6 +189,8 @@ public enum TrackerEditorKey: Equatable, Sendable {
             self = .forwardDeleteCharacter
         case "=", "*":
             self = .insertMeasureLine
+        case "/":
+            self = .insertSpecialController
         default:
             return nil
         }
@@ -168,6 +200,7 @@ public enum TrackerEditorKey: Equatable, Sendable {
 public enum TrackerEditorCommand: Equatable, Sendable {
     case deleteSelectedRow
     case insertMeasureLine
+    case insertSpecialController
 }
 
 /// What A–G does on the current tracker row, matching STed2 `kc>='A' && kc<='G'`.
@@ -177,6 +210,10 @@ public enum TrackerInlineCancelAction: Equatable, Sendable {
 
     public static func forInsertedNote(_ isInsertedNote: Bool) -> TrackerInlineCancelAction {
         isInsertedNote ? .deleteInsertedStep : .discardEdits
+    }
+
+    public static func forInsertedSpecial(_ isInsertedSpecial: Bool) -> TrackerInlineCancelAction {
+        forInsertedNote(isInsertedSpecial)
     }
 }
 
@@ -196,6 +233,62 @@ public enum TrackerNoteKeyAction: Equatable, Sendable {
     }
 }
 
+/// Digit/`sinput` targets for an existing tracker row, matching EDIT.C 0–9.
+public enum TrackerNumericEditAction: Equatable, Sendable {
+    case ignore
+    case edit(EventColumn)
+    case editPitchBend
+
+    public static func forCommand(_ command: UInt8, column: EventColumn) -> TrackerNumericEditAction {
+        if command == 0xeb, column == .note {
+            return .edit(.gt)
+        }
+        if command < 0x80 {
+            return .edit(column)
+        }
+        if command == 0xee, column == .gt || column == .vel {
+            return .editPitchBend
+        }
+        if command == 0xec, column == .gt || column == .vel {
+            return .edit(.gt)
+        }
+        if column == .note {
+            return .ignore
+        }
+        if command < 0xf0 || command == 0xf8 || command == 0xfc {
+            if command == 0xfc {
+                return .edit(.st)
+            }
+            return .edit(column)
+        }
+        return .ignore
+    }
+
+    public static func range(command: UInt8, column: EventColumn) -> ClosedRange<Int> {
+        if command == 0xee, column == .gt || column == .vel {
+            return -8192...8191
+        }
+        if command < 0x80 {
+            return column.numericRange
+        }
+        if command == 0xe7 || column == .st {
+            return 0...255
+        }
+        return 0...127
+    }
+
+    public var column: EventColumn {
+        switch self {
+        case .ignore:
+            return .note
+        case .edit(let column):
+            return column
+        case .editPitchBend:
+            return .vel
+        }
+    }
+}
+
 public enum TrackerEditorKeyMap {
     public static func command(
         for key: TrackerEditorKey,
@@ -207,6 +300,8 @@ public enum TrackerEditorKeyMap {
             return .deleteSelectedRow
         case .insertMeasureLine:
             return .insertMeasureLine
+        case .insertSpecialController:
+            return .insertSpecialController
         }
     }
 }
@@ -236,6 +331,10 @@ public struct TrackerTextInputSession: Equatable, Sendable {
             self.text = TrackerTextInput.normalizedNumeric(initialText)
         case .note:
             self.text = TrackerTextInput.normalizedNote(initialText)
+        case .symbol:
+            self.text = TrackerTextInput.normalizedSymbol(initialText)
+        case .pitch:
+            self.text = TrackerTextInput.normalizedNumeric(initialText, maximumLength: TrackerTextInput.symbolMaximumLength)
         }
         caretPosition = self.text.count
         isAllSelected = selectAll && !self.text.isEmpty
@@ -256,7 +355,7 @@ public struct TrackerTextInputSession: Equatable, Sendable {
             isAllSelected = false
         }
 
-        guard text.count < TrackerTextInput.maximumLength else { return }
+        guard text.count < TrackerTextInput.maximumLength(for: mode) else { return }
 
         var characters = Array(text)
         characters.insert(character, at: caretPosition)
@@ -330,7 +429,7 @@ public struct TrackerTextInputSession: Equatable, Sendable {
 
     private func normalizedCharacter(_ character: Character) -> Character? {
         switch mode {
-        case .numeric:
+        case .numeric, .pitch:
             if character == "-" {
                 let validationText = isAllSelected ? "" : text
                 let validationCaret = isAllSelected ? 0 : caretPosition
@@ -345,6 +444,10 @@ public struct TrackerTextInputSession: Equatable, Sendable {
             return Character(String(digit))
         case .note:
             let normalized = TrackerTextInput.normalizedNote(String(character))
+            guard normalized.count == 1 else { return nil }
+            return normalized.first
+        case .symbol:
+            let normalized = TrackerTextInput.normalizedSymbol(String(character))
             guard normalized.count == 1 else { return nil }
             return normalized.first
         }
@@ -414,35 +517,58 @@ extension TrackEvent {
         }
     }
 
-    public func settingNumericValue(_ value: Int, in column: EventColumn) -> TrackEvent {
-        var event = self
-        let range = column.numericRange
-        let clamped = min(range.upperBound, max(range.lowerBound, value))
-        switch column {
-        case .note:
-            guard event.command < 0x80 else { return event }
-            event.command = UInt8(clamped)
-        case .st:
-            event.delay = UInt8(clamped)
-        case .gt:
-            event.param1 = UInt8(clamped)
-        case .vel:
-            event.param2 = UInt8(clamped)
+    public func editorValue(for action: TrackerNumericEditAction) -> Int? {
+        switch action {
+        case .ignore:
+            return nil
+        case .edit(let column):
+            if command == 0xeb, column == .gt {
+                return Int(param1 & 127)
+            }
+            return numericValue(in: column)
+        case .editPitchBend:
+            return SpecialController.pitchValue(param1: param1, param2: param2)
         }
-        return event
+    }
+
+    public func settingNumericValue(_ value: Int, in column: EventColumn) -> TrackEvent {
+        settingEditorValue(value, action: .edit(column))
+    }
+
+    public func settingEditorValue(_ value: Int, action: TrackerNumericEditAction) -> TrackEvent {
+        switch action {
+        case .ignore:
+            return self
+        case .editPitchBend:
+            return SpecialController.pitchBendEvent(delay: delay, bend: value)
+        case .edit(let column):
+            var event = self
+            let range = TrackerNumericEditAction.range(command: command, column: column)
+            let clamped = min(range.upperBound, max(range.lowerBound, value))
+            switch column {
+            case .note:
+                guard event.command < 0x80 else { return event }
+                event.command = UInt8(clamped)
+            case .st:
+                event.delay = UInt8(clamped)
+            case .gt:
+                event.param1 = UInt8(clamped)
+            case .vel:
+                event.param2 = UInt8(clamped)
+            }
+            return event
+        }
     }
 
     public func applying(_ input: TrackEditInput, column: EventColumn) -> TrackEvent {
         var event = self
         switch input {
         case .digit(let digit):
-            guard let currentValue = numericValue(in: column) else { return self }
-            let nextValue = enterDigit(
-                currentValue,
-                digit,
-                max: column.numericRange.upperBound
-            )
-            return settingNumericValue(nextValue, in: column)
+            let action = TrackerNumericEditAction.forCommand(command, column: column)
+            guard let currentValue = editorValue(for: action) else { return self }
+            let range = TrackerNumericEditAction.range(command: command, column: action.column)
+            let nextValue = enterDigit(currentValue, digit, max: range.upperBound)
+            return settingEditorValue(nextValue, action: action)
         case .pitchClass(let classIndex):
             guard event.command < 0x80, (0...6).contains(classIndex) else { return event }
             let pitchClasses = [9, 11, 0, 2, 4, 5, 7]

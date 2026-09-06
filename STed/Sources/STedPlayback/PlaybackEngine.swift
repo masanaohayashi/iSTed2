@@ -160,12 +160,15 @@ public final class PlaybackEngine: ObservableObject {
             try audio.start()
         }
         audioErrorMessage = nil
-        if state != .paused {
-            if let measure, let song {
-                pausedAt = song.seconds(atTick: song.startTick(ofMeasure: measure))
-            } else {
-                pausedAt = 0
-            }
+        if let start = PlaybackStart.seconds(
+            fromMeasure: measure,
+            isPaused: state == .paused,
+            song: song
+        ) {
+            pausedAt = start
+        }
+        if state == .playing {
+            audio.panic()
         }
         runtime.play(from: pausedAt)
         state = .playing
@@ -264,5 +267,17 @@ public final class PlaybackEngine: ObservableObject {
         if snapshot.finished {
             stop()
         }
+    }
+}
+
+enum PlaybackStart {
+    static func seconds(fromMeasure measure: Int?, isPaused: Bool, song: Song?) -> Double? {
+        if let measure, let song {
+            return song.seconds(atTick: song.startTick(ofMeasure: measure))
+        }
+        if isPaused {
+            return nil
+        }
+        return 0
     }
 }

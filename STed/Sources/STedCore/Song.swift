@@ -55,6 +55,7 @@ public struct TrackEvent: Equatable, Sendable {
     public static let defaultNote = TrackEvent(command: 60, delay: 48, param1: 36, param2: 100)
     public static let defaultInsertedNote = TrackEvent(command: 60, delay: 48, param1: 46, param2: 100)
     public static let measureLine = TrackEvent(command: 0xfd, delay: 0, param1: 0, param2: 0)
+    public static let specialControllerPlaceholder = TrackEvent(command: 0, delay: 0, param1: 0, param2: 0)
 
     public var isTerminator: Bool {
         command == 0xfe || command == 0xff
@@ -75,6 +76,7 @@ public struct EventRow: Equatable, Sendable {
     public var gtText: String
     public var velText: String
     public var isMeasureLine: Bool = false
+    public var ink: TrackerInk = .white
 }
 
 public struct Track: Equatable, Identifiable, Sendable {
@@ -190,7 +192,8 @@ public struct Track: Equatable, Identifiable, Sendable {
                     stText: isMeasureLine ? "" : cells.st,
                     gtText: isMeasureLine ? "" : cells.gt,
                     velText: isMeasureLine ? "" : cells.vel,
-                    isMeasureLine: isMeasureLine
+                    isMeasureLine: isMeasureLine,
+                    ink: event.trackerInk
                 )
             )
             previousCommand = event.command
@@ -238,6 +241,19 @@ public struct Track: Equatable, Identifiable, Sendable {
 
     public mutating func insertMeasureLine(at index: Int) {
         insertEvent(.measureLine, at: index)
+    }
+
+    public mutating func insertSpecialControllerPlaceholder(at index: Int) {
+        insertEvent(.specialControllerPlaceholder, at: index)
+    }
+
+    public mutating func applySpecialController(_ code: SpecialControllerCode, at index: Int) {
+        guard events.indices.contains(index), index < terminatorIndex else { return }
+        events[index] = SpecialController.makeEvent(
+            code,
+            previousEvents: events.prefix(index),
+            trackMIDIChannel: midiChannel
+        )
     }
 
     /// Step total of the measure that ends at `index`, matching STed2 `step_cluc`.

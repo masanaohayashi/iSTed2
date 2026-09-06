@@ -258,4 +258,58 @@ final class TrackEditInputTests: XCTestCase {
             )
         }
     }
+
+    func testDigitsEditSpecialControllerStepGateAndVelocity() {
+        XCTAssertEqual(TrackerNumericEditAction.forCommand(0xeb, column: .st), .edit(.st))
+        XCTAssertEqual(TrackerNumericEditAction.forCommand(0xeb, column: .gt), .edit(.gt))
+        XCTAssertEqual(TrackerNumericEditAction.forCommand(0xeb, column: .vel), .edit(.vel))
+        XCTAssertEqual(TrackerNumericEditAction.forCommand(0xec, column: .gt), .edit(.gt))
+        XCTAssertEqual(TrackerNumericEditAction.forCommand(0xe6, column: .gt), .edit(.gt))
+        XCTAssertEqual(TrackerNumericEditAction.forCommand(0xe7, column: .st), .edit(.st))
+        XCTAssertEqual(TrackerNumericEditAction.forCommand(60, column: .st), .edit(.st))
+        XCTAssertEqual(TrackerNumericEditAction.forCommand(0xfd, column: .st), .ignore)
+        XCTAssertEqual(TrackerNumericEditAction.forCommand(0xfe, column: .vel), .ignore)
+    }
+
+    func testControlChangeNoteColumnDigitsEditTheControllerNumber() {
+        XCTAssertEqual(TrackerNumericEditAction.forCommand(0xeb, column: .note), .edit(.gt))
+    }
+
+    func testProgramChangeVelocityDigitsEditTheProgramNumber() {
+        XCTAssertEqual(TrackerNumericEditAction.forCommand(0xec, column: .vel), .edit(.gt))
+        XCTAssertEqual(TrackerNumericEditAction.forCommand(0xe2, column: .gt), .edit(.gt))
+        XCTAssertEqual(TrackerNumericEditAction.forCommand(0xe2, column: .vel), .edit(.vel))
+    }
+
+    func testPitchBendGateAndVelocityOpenTheBendEditor() {
+        XCTAssertEqual(TrackerNumericEditAction.forCommand(0xee, column: .st), .edit(.st))
+        XCTAssertEqual(TrackerNumericEditAction.forCommand(0xee, column: .gt), .editPitchBend)
+        XCTAssertEqual(TrackerNumericEditAction.forCommand(0xee, column: .vel), .editPitchBend)
+        XCTAssertEqual(TrackerNumericEditAction.forCommand(0xee, column: .note), .ignore)
+    }
+
+    func testSpecialControllerNumericRangesMatchSpconClamps() {
+        XCTAssertEqual(TrackerNumericEditAction.range(command: 0xeb, column: .st), 0...255)
+        XCTAssertEqual(TrackerNumericEditAction.range(command: 0xeb, column: .gt), 0...127)
+        XCTAssertEqual(TrackerNumericEditAction.range(command: 0xeb, column: .vel), 0...127)
+        XCTAssertEqual(TrackerNumericEditAction.range(command: 0xe7, column: .gt), 0...255)
+        XCTAssertEqual(TrackerNumericEditAction.range(command: 0xe7, column: .vel), 0...255)
+        XCTAssertEqual(TrackerNumericEditAction.range(command: 0xee, column: .vel), -8192...8191)
+    }
+
+    func testEditorValueReadsPitchBendAndControlFields() {
+        let volume = TrackEvent(command: 0xeb, delay: 12, param1: 7, param2: 80)
+        XCTAssertEqual(volume.editorValue(for: .edit(.st)), 12)
+        XCTAssertEqual(volume.editorValue(for: .edit(.gt)), 7)
+        XCTAssertEqual(volume.editorValue(for: .edit(.vel)), 80)
+
+        let pitch = TrackEvent(command: 0xee, delay: 11, param1: 85, param2: 74)
+        XCTAssertEqual(pitch.editorValue(for: .editPitchBend), 1365)
+    }
+
+    func testApplyingADigitUpdatesASpecialControllerVelocity() {
+        let volume = TrackEvent(command: 0xeb, delay: 1, param1: 7, param2: 5)
+        XCTAssertEqual(volume.applying(.digit(8), column: .vel).param2, 58)
+        XCTAssertEqual(volume.applying(.digit(3), column: .st).delay, 13)
+    }
 }

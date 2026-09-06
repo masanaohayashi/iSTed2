@@ -2,6 +2,32 @@ import XCTest
 @testable import STedPlayback
 import STedCore
 
+final class PlaybackStartTests: XCTestCase {
+    func testPlayButtonAlwaysJumpsToTheRequestedMeasure() {
+        let song = Song(
+            title: "",
+            timeBase: 48,
+            tempoBPM: 120,
+            beatNumerator: 4,
+            beatDenominator: 4,
+            tracks: []
+        )
+
+        XCTAssertEqual(
+            try XCTUnwrap(PlaybackStart.seconds(fromMeasure: 2, isPaused: false, song: song)),
+            2.0,
+            accuracy: 0.000_001
+        )
+        XCTAssertEqual(
+            try XCTUnwrap(PlaybackStart.seconds(fromMeasure: 2, isPaused: true, song: song)),
+            2.0,
+            accuracy: 0.000_001
+        )
+        XCTAssertNil(PlaybackStart.seconds(fromMeasure: nil, isPaused: true, song: song))
+        XCTAssertEqual(PlaybackStart.seconds(fromMeasure: nil, isPaused: false, song: song), 0)
+    }
+}
+
 final class PlaybackRuntimeTests: XCTestCase {
     func testRenderAdvancesExactlyByAudioBufferDuration() {
         let runtime = PlaybackRuntime()

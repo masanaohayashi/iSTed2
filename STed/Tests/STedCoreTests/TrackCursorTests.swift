@@ -31,6 +31,25 @@ final class TrackCursorTests: XCTestCase {
         XCTAssertEqual(cursor, TrackCursor(row: 2, column: .note))
     }
 
+    func testPageDownMovesByThePageSizeAndStopsAtTheLastRow() {
+        var cursor = TrackCursor(row: 5, column: .st)
+
+        cursor.page(by: 24, rowCount: 40)
+
+        XCTAssertEqual(cursor, TrackCursor(row: 29, column: .st))
+
+        cursor.page(by: 24, rowCount: 40)
+        XCTAssertEqual(cursor, TrackCursor(row: 39, column: .st))
+    }
+
+    func testPageUpMovesByThePageSizeAndStopsAtTheFirstRow() {
+        var cursor = TrackCursor(row: 10, column: .vel)
+
+        cursor.page(by: -24, rowCount: 40)
+
+        XCTAssertEqual(cursor, TrackCursor(row: 0, column: .vel))
+    }
+
     func testLeftFromNoteWrapsToVelocityOnPreviousRow() {
         var cursor = TrackCursor(row: 1, column: .note)
 

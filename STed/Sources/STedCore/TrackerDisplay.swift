@@ -1,3 +1,22 @@
+public enum TrackerInk: Equatable, Sendable {
+    case white
+    case yellow
+    case cyan
+}
+
+extension TrackEvent {
+    /// STed2 `H_PRINT` colors: white, yellow for ST=0 notes, cyan for specials.
+    public var trackerInk: TrackerInk {
+        if command < 0x80 {
+            return delay == 0 ? .yellow : .white
+        }
+        if command < 0xfd && command != 0xf6 {
+            return .cyan
+        }
+        return .white
+    }
+}
+
 enum TrackerMeasureLine {
     /// STed2 `trk_dis` prints `"--------" + fstr(step_cluc, 5) + " -----------"`
     /// across the 25-character NOTE/ST/GT/VEL field.
@@ -111,7 +130,26 @@ extension TrackEvent {
         case 0xe7:
             return TrackerCells(note: "TEMPO", st: "\(delay)", gt: "\(param1)", vel: "\(param2)")
         case 0xe6:
-            return TrackerCells(note: "MIDI CH.", st: "\(delay)", gt: "", vel: "")
+            return TrackerCells(note: "MIDI CH.", st: "\(delay)", gt: "\(param1)", vel: "")
+        case 0xe2:
+            return TrackerCells(note: "BankProg", st: "\(delay)", gt: "\(param1)", vel: "\(param2)")
+        case 0x90...0x97:
+            return TrackerCells(
+                note: "UserExc\(command - 0x90)",
+                st: "\(delay)",
+                gt: "\(param1)",
+                vel: "\(param2)"
+            )
+        case 0x98:
+            return TrackerCells(note: "Tr.Exclu", st: "\(delay)", gt: "\(param1)", vel: "\(param2)")
+        case 0xdd:
+            return TrackerCells(note: "Rol.Base", st: "\(delay)", gt: "\(param1)", vel: "\(param2)")
+        case 0xde:
+            return TrackerCells(note: "Rol.Para", st: "\(delay)", gt: "\(param1)", vel: "\(param2)")
+        case 0xdf:
+            return TrackerCells(note: "Rol.Dev#", st: "\(delay)", gt: "\(param1)", vel: "\(param2)")
+        case 0xdc:
+            return TrackerCells(note: "MKS-7", st: "\(delay)", gt: "\(param1)", vel: "\(param2)")
         case 0xea:
             return TrackerCells(note: "AFTER C.", st: "\(delay)", gt: "\(param1)", vel: "\(param2)")
         case 0xed:
@@ -148,18 +186,34 @@ func stedNoteLabel(_ note: UInt8) -> String {
 
 private func controllerName(_ number: UInt8) -> String {
     switch number {
+    case 0: return "BANK MSB"
     case 1: return "MODULAT"
     case 2: return "BREATH"
     case 4: return "FOOT C."
     case 5: return "PORTA.TM"
+    case 6: return "DATA MSB"
     case 7: return "VOLUME"
     case 10: return "PANPOT"
     case 11: return "EXPRESS"
+    case 32: return "BANK LSB"
+    case 38: return "DATA LSB"
     case 64: return "HOLD1"
     case 65: return "PORTAMEN"
+    case 66: return "SOSTENUT"
+    case 67: return "SOFT"
+    case 71: return "Resonanc"
+    case 72: return "Rel.Time"
+    case 73: return "Att.Time"
+    case 74: return "Cutoff F"
+    case 84: return "POR.CONT"
     case 91: return "REVERB"
     case 93: return "CHORUS"
     case 94: return "DELAY"
-    default: return "CC\(number)"
+    case 98: return "NRPN LSB"
+    case 99: return "NRPN MSB"
+    case 100: return "RPN  LSB"
+    case 101: return "RPN  MSB"
+    case 121: return "RES.ALL"
+    default: return "CONTROL"
     }
 }
