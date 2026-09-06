@@ -1,5 +1,4 @@
 import SwiftUI
-import UniformTypeIdentifiers
 import STedCore
 import STedPlayback
 
@@ -10,9 +9,6 @@ struct TrackListView: View {
 
     @State private var isSongSettingsPresented = false
     @State private var trackToEdit: Track?
-    @State private var isImporterPresented = false
-    @State private var isExporterPresented = false
-    @State private var exportDocument = RCPFileDocument()
 
     var body: some View {
         List {
@@ -55,14 +51,21 @@ struct TrackListView: View {
         .navigationBarTitleDisplayMode(.inline)
         #endif
         .toolbar {
+            ToolbarItem(placement: .automatic) {
+                Button("新規") { engine.requestFileOperation(.newProject) }
+            }
             ToolbarItem(placement: .primaryAction) {
                 settingsButton
             }
             ToolbarItem(placement: .automatic) {
-                Button("Open RCP") { isImporterPresented = true }
+                Button("開く") { engine.requestFileOperation(.open) }
             }
             ToolbarItem(placement: .automatic) {
-                Button("Save RCP") { saveRCP() }
+                Button("保存") { engine.requestFileOperation(.save) }
+                    .disabled(engine.song == nil)
+            }
+            ToolbarItem(placement: .automatic) {
+                Button("名前を付けて保存") { engine.requestFileOperation(.saveAs) }
                     .disabled(engine.song == nil)
             }
             ToolbarItem(placement: .automatic) {
@@ -79,33 +82,6 @@ struct TrackListView: View {
         .sheet(item: $trackToEdit) { track in
             TrackSettingsView(track: track) { channel, start, shift, name in
                 engine.updateTrack(trackID: track.id, midiChannel: channel, startTick: start, keyShift: shift, memo: name)
-            }
-        }
-        .fileExporter(
-            isPresented: $isExporterPresented,
-            document: exportDocument,
-            contentType: .data,
-            defaultFilename: engine.exportFileName
-        ) { result in
-            if case .failure(let error) = result {
-                engine.reportError(error)
-            }
-        }
-        .fileImporter(
-            isPresented: $isImporterPresented,
-            allowedContentTypes: [.data, .item],
-            allowsMultipleSelection: false
-        ) { result in
-            switch result {
-            case .success(let urls):
-                guard let url = urls.first else { return }
-                do {
-                    try engine.load(url: url)
-                } catch {
-                    engine.reportError(error)
-                }
-            case .failure(let error):
-                engine.reportError(error)
             }
         }
     }
@@ -228,14 +204,6 @@ struct TrackListView: View {
         }
     }
 
-    private func saveRCP() {
-        do {
-            exportDocument = RCPFileDocument(data: try engine.encodedRCP())
-            isExporterPresented = true
-        } catch {
-            engine.reportError(error)
-        }
-    }
 }
 
 private struct SongSettingsView: View {

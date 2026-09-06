@@ -1,4 +1,5 @@
 import SwiftUI
+import UniformTypeIdentifiers
 import STedPlayback
 #if os(iOS)
 import UIKit
@@ -8,6 +9,9 @@ struct RootView: View {
     @EnvironmentObject private var engine: PlaybackEngine
     @State private var path: [AppRoute] = []
     @State private var isSettingsPresented = false
+    @State private var isImporterPresented = false
+    @State private var isExporterPresented = false
+    @State private var exportDocument = RCPFileDocument()
 
     var body: some View {
         Group {
@@ -41,6 +45,42 @@ struct RootView: View {
                         .frame(minWidth: 420, minHeight: 480)
                         #endif
                     }
+            }
+        }
+        .onChange(of: engine.requestedFileOperation) { _, operation in
+            guard let operation else { return }
+            engine.consumeFileOperation()
+            handleFileOperation(operation)
+        }
+        .fileExporter(
+            isPresented: $isExporterPresented,
+            document: exportDocument,
+            contentType: .data,
+            defaultFilename: engine.exportFileName
+        ) { result in
+            switch result {
+            case .success(let url):
+                engine.recordSavedFile(at: url)
+            case .failure(let error):
+                engine.reportError(error)
+            }
+        }
+        .fileImporter(
+            isPresented: $isImporterPresented,
+            allowedContentTypes: [.data, .item],
+            allowsMultipleSelection: false
+        ) { result in
+            switch result {
+            case .success(let urls):
+                guard let url = urls.first else { return }
+                do {
+                    try engine.load(url: url)
+                    path.removeAll()
+                } catch {
+                    engine.reportError(error)
+                }
+            case .failure(let error):
+                engine.reportError(error)
             }
         }
         #if os(macOS)
@@ -102,6 +142,37 @@ struct RootView: View {
            let trackID = engine.selectedTrackID ?? engine.song?.tracks.first?.id
         {
             path = [.trackEditor(trackID)]
+        }
+    }
+
+    private func handleFileOperation(_ operation: PlaybackEngine.FileOperation) {
+        switch operation {
+        case .newProject:
+            path.removeAll()
+            engine.newProject()
+        case .open:
+            isImporterPresented = true
+        case .save:
+            if engine.currentFileURL == nil {
+                beginSaveAs()
+            } else {
+                do {
+                    try engine.save()
+                } catch {
+                    engine.reportError(error)
+                }
+            }
+        case .saveAs:
+            beginSaveAs()
+        }
+    }
+
+    private func beginSaveAs() {
+        do {
+            exportDocument = RCPFileDocument(data: try engine.encodedRCP())
+            isExporterPresented = true
+        } catch {
+            engine.reportError(error)
         }
     }
 }

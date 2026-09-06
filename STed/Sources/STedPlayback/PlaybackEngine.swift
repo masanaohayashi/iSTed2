@@ -2,8 +2,26 @@ import Combine
 import Foundation
 import STedCore
 
+public enum ProjectFileError: Error, LocalizedError, Equatable, Sendable {
+    case noCurrentFile
+
+    public var errorDescription: String? {
+        switch self {
+        case .noCurrentFile:
+            return "保存先がまだ決まっていません。"
+        }
+    }
+}
+
 @MainActor
 public final class PlaybackEngine: ObservableObject {
+    public enum FileOperation: Equatable, Sendable {
+        case newProject
+        case open
+        case save
+        case saveAs
+    }
+
     public enum State: Equatable {
         case empty
         case loaded
@@ -15,6 +33,8 @@ public final class PlaybackEngine: ObservableObject {
     @Published public private(set) var positionSeconds: Double = 0
     @Published public private(set) var songEndSeconds: Double = 0
     @Published public private(set) var title: String = ""
+    @Published public private(set) var currentFileURL: URL?
+    @Published public private(set) var requestedFileOperation: FileOperation?
     @Published public private(set) var song: Song? {
         didSet {
             guard !isRestoringHistory, oldValue != song else { return }
@@ -137,7 +157,19 @@ public final class PlaybackEngine: ObservableObject {
         audioErrorMessage = error.localizedDescription
     }
 
+    public func requestFileOperation(_ operation: FileOperation) {
+        requestedFileOperation = operation
+    }
+
+    public func consumeFileOperation() {
+        requestedFileOperation = nil
+    }
+
     public func load(data: Data, title: String = "") throws {
+        try load(data: data, title: title, fileURL: nil)
+    }
+
+    private func load(data: Data, title: String, fileURL: URL?) throws {
         stop()
         let loaded = try RCPDecoder.song(from: data)
         isRestoringHistory = true
@@ -150,6 +182,7 @@ public final class PlaybackEngine: ObservableObject {
         historyRevision += 1
         selectedTrackID = loaded.tracks.first?.id
         self.title = loaded.title.isEmpty ? title : loaded.title
+        currentFileURL = fileURL
         try rebuildPlayback(resetPosition: true)
         state = .loaded
         errorMessage = nil
@@ -162,11 +195,44 @@ public final class PlaybackEngine: ObservableObject {
                 url.stopAccessingSecurityScopedResource()
             }
         }
-        try load(data: Data(contentsOf: url), title: url.lastPathComponent)
+        try load(data: Data(contentsOf: url), title: url.lastPathComponent, fileURL: url)
     }
 
     public func loadDemo() throws {
         try load(data: RCPDemo.phrase, title: "Demo Phrase")
+    }
+
+    public func newProject() {
+        stop()
+        let track = Track(
+            id: 0,
+            number: 1,
+            midiChannel: 1,
+            memo: "Track 1",
+            events: [TrackEvent(command: 0xfe, delay: 0, param1: 0, param2: 0)]
+        )
+        let fresh = Song(
+            title: "",
+            timeBase: 48,
+            tempoBPM: 120,
+            beatNumerator: 4,
+            beatDenominator: 4,
+            tracks: [track]
+        )
+        isRestoringHistory = true
+        song = fresh
+        isRestoringHistory = false
+        editStart = nil
+        undoSongs.removeAll()
+        redoSongs.removeAll()
+        selectedTrackID = track.id
+        title = ""
+        currentFileURL = nil
+        errorMessage = nil
+        historyRevision += 1
+        try? rebuildPlayback(resetPosition: true)
+        state = .loaded
+        refreshHistoryAvailability()
     }
 
     public func setMuted(_ muted: Bool, trackID: Int) {
@@ -184,6 +250,28 @@ public final class PlaybackEngine: ObservableObject {
         let base = title.isEmpty ? "song" : title
         let cleaned = base.replacingOccurrences(of: "/", with: "-")
         return cleaned.hasSuffix(".rcp") || cleaned.hasSuffix(".RCP") ? cleaned : "\(cleaned).rcp"
+    }
+
+    public func save() throws {
+        guard let currentFileURL else { throw ProjectFileError.noCurrentFile }
+        try save(to: currentFileURL)
+    }
+
+    public func save(to url: URL) throws {
+        let data = try encodedRCP()
+        let accessed = url.startAccessingSecurityScopedResource()
+        defer {
+            if accessed {
+                url.stopAccessingSecurityScopedResource()
+            }
+        }
+        try data.write(to: url, options: .atomic)
+        currentFileURL = url
+    }
+
+    /// Records the URL written by SwiftUI's Save As exporter.
+    public func recordSavedFile(at url: URL) {
+        currentFileURL = url
     }
 
     public func updateEvent(trackID: Int, index: Int, _ event: TrackEvent) {

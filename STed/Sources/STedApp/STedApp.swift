@@ -24,7 +24,41 @@ struct STedApplication: App {
                     }
                 }
         }
-        .commands { TrackerHistoryCommands(engine: engine) }
+        .commands {
+            TrackerFileCommands(engine: engine)
+            TrackerHistoryCommands(engine: engine)
+        }
+    }
+}
+
+private struct TrackerFileCommands: Commands {
+    @ObservedObject var engine: PlaybackEngine
+
+    var body: some Commands {
+        CommandGroup(replacing: .newItem) {
+            Button("新規プロジェクト") {
+                engine.requestFileOperation(.newProject)
+            }
+            .keyboardShortcut("n", modifiers: .command)
+        }
+        CommandGroup(after: .importExport) {
+            Button("開く…") {
+                engine.requestFileOperation(.open)
+            }
+            .keyboardShortcut("o", modifiers: .command)
+        }
+        CommandGroup(replacing: .saveItem) {
+            Button("保存") {
+                engine.requestFileOperation(.save)
+            }
+            .keyboardShortcut("s", modifiers: .command)
+            .disabled(engine.song == nil)
+            Button("名前を付けて保存…") {
+                engine.requestFileOperation(.saveAs)
+            }
+            .keyboardShortcut("s", modifiers: [.command, .shift])
+            .disabled(engine.song == nil)
+        }
     }
 }
 

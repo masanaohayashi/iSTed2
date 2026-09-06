@@ -1,10 +1,8 @@
 import SwiftUI
-import UniformTypeIdentifiers
 import STedPlayback
 
 struct SettingsView: View {
     @EnvironmentObject private var engine: PlaybackEngine
-    @State private var isImporterPresented = false
 
     var body: some View {
         Form {
@@ -22,7 +20,12 @@ struct SettingsView: View {
             }
 
             Section("ファイル") {
-                Button("RCP を開く") { isImporterPresented = true }
+                Button("新規プロジェクト") { engine.requestFileOperation(.newProject) }
+                Button("RCP を開く") { engine.requestFileOperation(.open) }
+                Button("保存") { engine.requestFileOperation(.save) }
+                    .disabled(engine.song == nil)
+                Button("名前を付けて保存") { engine.requestFileOperation(.saveAs) }
+                    .disabled(engine.song == nil)
                 Button("Demo Phrase を読み込む") { loadDemo() }
             }
 
@@ -49,23 +52,6 @@ struct SettingsView: View {
         #if os(iOS)
         .navigationBarTitleDisplayMode(.inline)
         #endif
-        .fileImporter(
-            isPresented: $isImporterPresented,
-            allowedContentTypes: [.data, .item],
-            allowsMultipleSelection: false
-        ) { result in
-            switch result {
-            case .success(let urls):
-                guard let url = urls.first else { return }
-                do {
-                    try engine.load(url: url)
-                } catch {
-                    engine.reportError(error)
-                }
-            case .failure(let error):
-                engine.reportError(error)
-            }
-        }
     }
 
     private func loadDemo() {
