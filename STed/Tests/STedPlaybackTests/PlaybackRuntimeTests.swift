@@ -89,7 +89,7 @@ final class PlaybackRuntimeTests: XCTestCase {
         runtime.play(from: 2)
 
         var messages: [[UInt8]] = []
-        runtime.render(frameCount: 48, sampleRate: 48_000) { bytes, _ in
+        runtime.render(frameCount: 48_000, sampleRate: 48_000) { bytes, _ in
             messages.append(bytes)
         }
 
@@ -117,7 +117,7 @@ final class PlaybackRuntimeTests: XCTestCase {
         runtime.play(from: 2)
 
         var messages: [[UInt8]] = []
-        runtime.render(frameCount: 48, sampleRate: 48_000) { bytes, _ in
+        runtime.render(frameCount: 48_000, sampleRate: 48_000) { bytes, _ in
             messages.append(bytes)
         }
 
@@ -171,7 +171,7 @@ final class PlaybackRuntimeTests: XCTestCase {
         runtime.play(from: 2)
 
         var messages: [[UInt8]] = []
-        runtime.render(frameCount: 48, sampleRate: 48_000) { bytes, _ in
+        runtime.render(frameCount: 48_000, sampleRate: 48_000) { bytes, _ in
             messages.append(bytes)
         }
 
@@ -183,6 +183,37 @@ final class PlaybackRuntimeTests: XCTestCase {
             [0xb0, 38, 34],
             [0x90, 60, 100]
         ])
+    }
+
+    func testCatchupDrainsBeforeFinishingPastTheNominalSongEnd() {
+        let sequence = RCPSequence(
+            timeBase: 48,
+            tempoBPM: 60,
+            songEndSeconds: 1,
+            events: [
+                TimedMIDIEvent(seconds: 0, ticks: 0, bytes: [0xc0, 12]),
+                TimedMIDIEvent(seconds: 1, ticks: 48, bytes: [0x90, 60, 100])
+            ]
+        )
+        let runtime = PlaybackRuntime()
+        runtime.load(sequence: sequence, songEnd: sequence.songEndSeconds)
+        runtime.play(from: 1)
+
+        var messages: [[UInt8]] = []
+        runtime.render(frameCount: 960, sampleRate: 48_000) { bytes, _ in
+            messages.append(bytes)
+        }
+        XCTAssertEqual(messages, [[0xc0, 12]])
+        XCTAssertTrue(runtime.snapshot().playing)
+
+        runtime.render(frameCount: 4_800, sampleRate: 48_000) { bytes, _ in
+            messages.append(bytes)
+        }
+        XCTAssertEqual(messages, [
+            [0xc0, 12],
+            [0x90, 60, 100]
+        ])
+        XCTAssertTrue(runtime.snapshot().finished)
     }
 
     func testDoesNotEmitWhileStopped() {

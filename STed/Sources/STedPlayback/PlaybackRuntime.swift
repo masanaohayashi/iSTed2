@@ -148,13 +148,24 @@ final class PlaybackRuntime: @unchecked Sendable {
         guard scheduler != nil else { return }
         position = max(0, seconds)
         let sequenceSeconds = max(0, position - timelineOffset)
-        let prefix = sequence.map { sequence in
-            sequence.stateEvents(beforeTick: sequence.tick(atSeconds: sequenceSeconds))
-        } ?? []
+        let prefix: [[UInt8]]
+        let prefixIntervalSeconds: Double
+        if let sequence {
+            prefix = sequence.stateEvents(beforeTick: sequence.tick(atSeconds: sequenceSeconds))
+            prefixIntervalSeconds = PlaybackCatchupTiming.interval(
+                for: prefix.count,
+                sequence: sequence
+            )
+        } else {
+            prefix = []
+            prefixIntervalSeconds = 0
+        }
         scheduler?.jump(
             to: position,
             prefix: prefix,
-            timelineOffset: timelineOffset
+            timelineOffset: timelineOffset,
+            prefixIntervalSeconds: prefixIntervalSeconds,
+            prefixTailSeconds: PlaybackCatchupTiming.settleSeconds
         )
         playing = true
         finished = false
@@ -265,7 +276,11 @@ final class PlaybackRuntime: @unchecked Sendable {
         }
 
         position = bufferEnd
-        if position > songEnd {
+        // A point-play catch-up may intentionally move musical events a little
+        // past the sequence's nominal end. Keep rendering until the scheduler
+        // has drained those delayed events instead of stopping in the middle
+        // of the state restore.
+        if position > songEnd, scheduler?.isFinished == true {
             playing = false
             finished = true
         }
@@ -420,5 +435,26 @@ final class PlaybackRuntime: @unchecked Sendable {
     private func append(bytes: [UInt8], offset: AUEventSampleTime) {
         pendingBytes.append(bytes)
         pendingOffsets.append(offset)
+    }
+}
+
+/// Keeps a point-play state restore from becoming a same-sample MIDI burst.
+/// STed2's default `lsp_wait=1` spaces the last-parameter transfer on the
+/// track timeline. The modern renderer has already merged tracks into one
+/// event stream, so use a quarter of one musical tick per message to retain
+/// roughly the same wall-clock duration while allowing independent tracks to
+/// overlap. A short tail lets the instrument finish applying the last state
+/// before the first musical event is sent.
+private enum PlaybackCatchupTiming {
+    static let settleSeconds = 0.05
+
+    static func interval(for count: Int, sequence: RCPSequence) -> Double {
+        guard count > 0 else { return 0 }
+        let tickSeconds = 60.0 / (
+            Double(max(1, sequence.tempoBPM)) * Double(max(1, sequence.timeBase))
+        )
+        let baseInterval = min(0.01, max(0.001, tickSeconds * 0.25))
+        let duration = min(2.0, max(0.05, baseInterval * Double(count)))
+        return duration / Double(count)
     }
 }

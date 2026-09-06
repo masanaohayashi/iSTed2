@@ -95,4 +95,50 @@ final class EventSchedulerTests: XCTestCase {
         }
         XCTAssertEqual(offsets, [10])
     }
+
+    func testPacedPrefixKeepsMusicalEventsBehindStateRestore() {
+        let scheduler = EventScheduler(
+            events: [
+                TimedMIDIEvent(seconds: 0, ticks: 0, bytes: [0x90, 60, 100])
+            ]
+        )
+        let prefix: [[UInt8]] = [
+            [0xb0, 7, 80],
+            [0xc0, 12]
+        ]
+        var messages: [[UInt8]] = []
+        var offsets: [Int] = []
+
+        scheduler.jump(
+            to: 0,
+            prefix: prefix,
+            timelineOffset: 0,
+            prefixIntervalSeconds: 0.01,
+            prefixTailSeconds: 0.02
+        )
+        scheduler.advance(to: 0.005, bufferStart: 0, sampleRate: 1_000) { bytes, offset in
+            messages.append(bytes)
+            offsets.append(Int(offset))
+        }
+        XCTAssertEqual(messages, [prefix[0]])
+        XCTAssertEqual(offsets, [0])
+
+        scheduler.advance(to: 0.015, bufferStart: 0, sampleRate: 1_000) { bytes, offset in
+            messages.append(bytes)
+            offsets.append(Int(offset))
+        }
+        XCTAssertEqual(messages, [prefix[0], prefix[1]])
+        XCTAssertEqual(offsets, [0, 10])
+
+        scheduler.advance(to: 0.05, bufferStart: 0, sampleRate: 1_000) { bytes, offset in
+            messages.append(bytes)
+            offsets.append(Int(offset))
+        }
+        XCTAssertEqual(messages, [
+            prefix[0],
+            prefix[1],
+            [0x90, 60, 100]
+        ])
+        XCTAssertEqual(offsets, [0, 10, 40])
+    }
 }
