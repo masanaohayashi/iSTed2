@@ -502,7 +502,11 @@ public final class PlaybackEngine: ObservableObject {
             )
             songEndSeconds = 0
         }
-        runtime.load(events: sequence?.events ?? [], songEnd: songEndSeconds)
+        if let sequence {
+            runtime.load(sequence: sequence, songEnd: songEndSeconds)
+        } else {
+            runtime.load(events: [], songEnd: songEndSeconds)
+        }
         if resetPosition {
             positionSeconds = 0
             pausedAt = 0

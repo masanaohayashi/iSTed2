@@ -71,6 +71,120 @@ final class PlaybackRuntimeTests: XCTestCase {
         XCTAssertEqual(messages, [[0x90, 64, 100]])
     }
 
+    func testPlayFromStartTimeRestoresTheLatestChannelStateBeforeTheNote() {
+        let sequence = RCPSequence(
+            timeBase: 48,
+            tempoBPM: 60,
+            songEndSeconds: 4,
+            events: [
+                TimedMIDIEvent(seconds: 0, ticks: 0, bytes: [0xb0, 7, 80]),
+                TimedMIDIEvent(seconds: 0, ticks: 0, bytes: [0xe0, 0, 64]),
+                TimedMIDIEvent(seconds: 1, ticks: 48, bytes: [0xb0, 7, 96]),
+                TimedMIDIEvent(seconds: 1, ticks: 48, bytes: [0xe0, 32, 65]),
+                TimedMIDIEvent(seconds: 2, ticks: 96, bytes: [0x90, 60, 100])
+            ]
+        )
+        let runtime = PlaybackRuntime()
+        runtime.load(sequence: sequence, songEnd: sequence.songEndSeconds)
+        runtime.play(from: 2)
+
+        var messages: [[UInt8]] = []
+        runtime.render(frameCount: 48, sampleRate: 48_000) { bytes, _ in
+            messages.append(bytes)
+        }
+
+        XCTAssertEqual(messages, [
+            [0xb0, 7, 96],
+            [0xe0, 32, 65],
+            [0x90, 60, 100]
+        ])
+    }
+
+    func testPlayFromStartTimeRestoresProgramAndAftertouchState() {
+        let sequence = RCPSequence(
+            timeBase: 48,
+            tempoBPM: 60,
+            songEndSeconds: 4,
+            events: [
+                TimedMIDIEvent(seconds: 0, ticks: 0, bytes: [0xc0, 12]),
+                TimedMIDIEvent(seconds: 0, ticks: 0, bytes: [0xd0, 80]),
+                TimedMIDIEvent(seconds: 1, ticks: 48, bytes: [0xa0, 60, 40]),
+                TimedMIDIEvent(seconds: 2, ticks: 96, bytes: [0x90, 60, 100])
+            ]
+        )
+        let runtime = PlaybackRuntime()
+        runtime.load(sequence: sequence, songEnd: sequence.songEndSeconds)
+        runtime.play(from: 2)
+
+        var messages: [[UInt8]] = []
+        runtime.render(frameCount: 48, sampleRate: 48_000) { bytes, _ in
+            messages.append(bytes)
+        }
+
+        XCTAssertEqual(messages, [
+            [0xc0, 12],
+            [0xd0, 80],
+            [0xa0, 60, 40],
+            [0x90, 60, 100]
+        ])
+    }
+
+    func testSeekDoesNotRestoreControllerValuesBeforeResetAllControllers() {
+        let sequence = RCPSequence(
+            timeBase: 48,
+            tempoBPM: 60,
+            songEndSeconds: 4,
+            events: [
+                TimedMIDIEvent(seconds: 0, ticks: 0, bytes: [0xb0, 7, 80]),
+                TimedMIDIEvent(seconds: 1, ticks: 48, bytes: [0xb0, 121, 0]),
+                TimedMIDIEvent(seconds: 2, ticks: 96, bytes: [0x90, 60, 100])
+            ]
+        )
+        let runtime = PlaybackRuntime()
+        runtime.load(sequence: sequence, songEnd: sequence.songEndSeconds)
+        runtime.play(from: 2)
+
+        var messages: [[UInt8]] = []
+        runtime.render(frameCount: 48, sampleRate: 48_000) { bytes, _ in
+            messages.append(bytes)
+        }
+
+        XCTAssertEqual(messages, [[0x90, 60, 100]])
+    }
+
+    func testSeekReplaysOrderSensitiveControllersAndSysExBeforeTheNote() {
+        let sequence = RCPSequence(
+            timeBase: 48,
+            tempoBPM: 60,
+            songEndSeconds: 4,
+            events: [
+                TimedMIDIEvent(seconds: 0, ticks: 0, bytes: [0xb0, 101, 0]),
+                TimedMIDIEvent(seconds: 0, ticks: 0, bytes: [0xb0, 100, 1]),
+                TimedMIDIEvent(seconds: 0, ticks: 0, bytes: [0xb0, 6, 12]),
+                TimedMIDIEvent(seconds: 1, ticks: 48, bytes: [0xf0, 0x43, 0x10, 0xf7]),
+                TimedMIDIEvent(seconds: 1, ticks: 48, bytes: [0xb0, 38, 34]),
+                TimedMIDIEvent(seconds: 2, ticks: 96, bytes: [0x90, 60, 100])
+            ]
+        )
+        let runtime = PlaybackRuntime()
+        runtime.load(sequence: sequence, songEnd: sequence.songEndSeconds)
+        runtime.play(from: 2)
+
+        var messages: [[UInt8]] = []
+        runtime.render(frameCount: 48, sampleRate: 48_000) { bytes, _ in
+            messages.append(bytes)
+        }
+
+        XCTAssertEqual(messages, [
+            [0xb0, 101, 0],
+            [0xb0, 100, 1],
+            [0xb0, 6, 12],
+            [0xf0, 0x43, 0x10, 0xf7],
+            [0xb0, 38, 34],
+            [0x90, 60, 100]
+        ])
+    }
+
     func testDoesNotEmitWhileStopped() {
         let runtime = PlaybackRuntime()
         runtime.load(

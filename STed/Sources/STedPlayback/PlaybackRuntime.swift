@@ -5,6 +5,7 @@ import STedCore
 final class PlaybackRuntime: @unchecked Sendable {
     private let lock = NSLock()
     private var scheduler: EventScheduler?
+    private var sequence: RCPSequence?
     private var playing = false
     private var position = 0.0
     private var songEnd = Double.infinity
@@ -15,7 +16,22 @@ final class PlaybackRuntime: @unchecked Sendable {
     func load(events: [TimedMIDIEvent], songEnd: Double) {
         lock.lock()
         defer { lock.unlock() }
+        install(events: events, sequence: nil, songEnd: songEnd)
+    }
+
+    func load(sequence: RCPSequence, songEnd: Double) {
+        lock.lock()
+        defer { lock.unlock() }
+        install(events: sequence.events, sequence: sequence, songEnd: songEnd)
+    }
+
+    private func install(
+        events: [TimedMIDIEvent],
+        sequence: RCPSequence?,
+        songEnd: Double
+    ) {
         scheduler = EventScheduler(events: events)
+        self.sequence = sequence
         self.songEnd = songEnd
         position = 0
         playing = false
@@ -29,7 +45,10 @@ final class PlaybackRuntime: @unchecked Sendable {
             return
         }
         position = max(0, seconds)
-        scheduler?.jump(to: position)
+        let prefix = sequence.map { sequence in
+            sequence.stateEvents(beforeTick: sequence.tick(atSeconds: position))
+        } ?? []
+        scheduler?.jump(to: position, prefix: prefix)
         playing = true
         finished = false
     }
