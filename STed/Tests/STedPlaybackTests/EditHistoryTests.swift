@@ -6,7 +6,7 @@ final class EditHistoryTests: XCTestCase {
     @MainActor
     func testSameMeasureCreationAndSourceDeletionAreUndoable() async throws {
         let engine = PlaybackEngine()
-        try engine.loadDemo()
+        try TestProjectFixture.loadPhrase(into: engine)
         let id = try XCTUnwrap(engine.song?.tracks.first?.id)
         let end = try XCTUnwrap(engine.song?.tracks.first?.terminatorIndex)
         engine.insertEvent(trackID: id, at: end, .measureLine)
@@ -26,7 +26,7 @@ final class EditHistoryTests: XCTestCase {
     @MainActor
     func testRangeReplacementIsOneUndoStep() async throws {
         let engine = PlaybackEngine()
-        try engine.loadDemo()
+        try TestProjectFixture.loadPhrase(into: engine)
         let before = try XCTUnwrap(engine.song)
         let id = before.tracks[0].id
         engine.replaceEvents(trackID: id, in: 0..<2, with: [.measureLine])
@@ -41,7 +41,7 @@ final class EditHistoryTests: XCTestCase {
     @MainActor
     func testEditsUndoRedoAndBranch() async throws {
         let engine = PlaybackEngine()
-        try engine.loadDemo()
+        try TestProjectFixture.loadPhrase(into: engine)
         let before = try XCTUnwrap(engine.song)
         let id = before.tracks[0].id
         engine.updateEvent(trackID: id, index: 0, TrackEvent(command: 72, delay: 48, param1: 30, param2: 90))
@@ -67,7 +67,7 @@ final class EditHistoryTests: XCTestCase {
     @MainActor
     func testProgramInsertIsOneUndoAndRoundTripsRCP() async throws {
         let engine = PlaybackEngine()
-        try engine.loadDemo()
+        try TestProjectFixture.loadPhrase(into: engine)
         let before = try engine.encodedRCP()
         let id = try XCTUnwrap(engine.song?.tracks.first?.id)
         engine.beginEdit()
@@ -85,7 +85,7 @@ final class EditHistoryTests: XCTestCase {
     @MainActor
     func testCancelledAndNoOpEditsDoNotPolluteHistory() async throws {
         let engine = PlaybackEngine()
-        try engine.loadDemo()
+        try TestProjectFixture.loadPhrase(into: engine)
         let id = try XCTUnwrap(engine.song?.tracks.first?.id)
         let event = try XCTUnwrap(engine.song?.tracks.first?.events.first)
         engine.updateEvent(trackID: id, index: 0, event)
@@ -102,7 +102,7 @@ final class EditHistoryTests: XCTestCase {
         engine.deleteEvent(trackID: id, at: 0)
         engine.endEdit()
         XCTAssertTrue(engine.canRedo)
-        try engine.loadDemo()
+        try TestProjectFixture.loadPhrase(into: engine)
         XCTAssertFalse(engine.canUndo)
         XCTAssertFalse(engine.canRedo)
     }
@@ -110,7 +110,7 @@ final class EditHistoryTests: XCTestCase {
     @MainActor
     func testUndoAnOpenInsertionAndTrackSettings() async throws {
         let engine = PlaybackEngine()
-        try engine.loadDemo()
+        try TestProjectFixture.loadPhrase(into: engine)
         let before = try XCTUnwrap(engine.song)
         let id = before.tracks[0].id
         engine.beginEdit()
@@ -126,7 +126,7 @@ final class EditHistoryTests: XCTestCase {
     @MainActor
     func testInlineSameMeasureIsOneUndoAndCancelPreservesRedo() async throws {
         let engine = PlaybackEngine()
-        try engine.loadDemo()
+        try TestProjectFixture.loadPhrase(into: engine)
         let before = try XCTUnwrap(engine.song)
         let track = before.tracks[0]
         engine.beginEdit()

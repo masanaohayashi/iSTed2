@@ -6,7 +6,7 @@ final class ProjectFileTests: XCTestCase {
     @MainActor
     func testNewProjectStartsWithoutFileAndSaveOverwritesKnownURL() throws {
         let engine = PlaybackEngine()
-        try engine.loadDemo()
+        try TestProjectFixture.loadPhrase(into: engine)
         XCTAssertFalse(engine.isDirty)
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("sted-project-\(UUID().uuidString).rcp")

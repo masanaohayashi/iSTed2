@@ -6,7 +6,7 @@ final class SongSettingsTests: XCTestCase {
     @MainActor
     func testSongSettingsPersistAndUndoTogether() async throws {
         let engine = PlaybackEngine()
-        try engine.loadDemo()
+        try TestProjectFixture.loadPhrase(into: engine)
         let original = try XCTUnwrap(engine.song)
         engine.updateSongSettings(title: "My song", tempoBPM: 90, numerator: 3, denominator: 4)
         let loaded = try RCPDecoder.song(from: engine.encodedRCP())
@@ -24,7 +24,7 @@ final class SongSettingsTests: XCTestCase {
     @MainActor
     func testAddConfigureDuplicateDeleteAndUndoTracks() async throws {
         let engine = PlaybackEngine()
-        try engine.loadDemo()
+        try TestProjectFixture.loadPhrase(into: engine)
         let id = try XCTUnwrap(engine.addTrack())
         XCTAssertEqual(engine.selectedTrackID, id)
         XCTAssertEqual(engine.selectedTrack?.events.count, 1)
@@ -50,7 +50,7 @@ final class SongSettingsTests: XCTestCase {
     @MainActor
     func testRCPTrackLimitAndLastTrackProtection() async throws {
         let engine = PlaybackEngine()
-        try engine.loadDemo()
+        try TestProjectFixture.loadPhrase(into: engine)
         for _ in 0..<40 { _ = engine.addTrack() }
         XCTAssertEqual(engine.song?.tracks.count, 36)
         XCTAssertFalse(engine.canAddTrack)

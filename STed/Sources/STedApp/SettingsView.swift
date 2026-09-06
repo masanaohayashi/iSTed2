@@ -26,7 +26,6 @@ struct SettingsView: View {
                     .disabled(engine.song == nil)
                 Button("名前を付けて保存") { engine.requestFileOperation(.saveAs) }
                     .disabled(engine.song == nil)
-                Button("Demo Phrase を読み込む") { loadDemo() }
             }
 
             Section("音源") {
@@ -54,11 +53,4 @@ struct SettingsView: View {
         #endif
     }
 
-    private func loadDemo() {
-        do {
-            try engine.loadDemo()
-        } catch {
-            engine.reportError(error)
-        }
-    }
 }

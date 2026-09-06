@@ -41,7 +41,7 @@ struct TrackListView: View {
                         trackRow(track)
                     }
                 } else {
-                    Text("RCP を開くか Demo を読み込む")
+                    Text("新規プロジェクトを作成するか RCP を開く")
                         .foregroundStyle(.secondary)
                 }
             }
@@ -67,9 +67,6 @@ struct TrackListView: View {
             ToolbarItem(placement: .automatic) {
                 Button("名前を付けて保存") { engine.requestFileOperation(.saveAs) }
                     .disabled(engine.song == nil)
-            }
-            ToolbarItem(placement: .automatic) {
-                Button("Demo") { loadDemo() }
             }
         }
         .sheet(isPresented: $isSongSettingsPresented) {
@@ -193,14 +190,6 @@ struct TrackListView: View {
         HStack(spacing: 4) {
             Text(name).foregroundStyle(.secondary)
             Text(value)
-        }
-    }
-
-    private func loadDemo() {
-        do {
-            try engine.loadDemo()
-        } catch {
-            engine.reportError(error)
         }
     }
 

@@ -208,10 +208,6 @@ public final class PlaybackEngine: ObservableObject {
         try load(data: Data(contentsOf: url), title: url.lastPathComponent, fileURL: url)
     }
 
-    public func loadDemo() throws {
-        try load(data: RCPDemo.phrase, title: "Demo Phrase")
-    }
-
     public func newProject() {
         stop()
         let track = Track(

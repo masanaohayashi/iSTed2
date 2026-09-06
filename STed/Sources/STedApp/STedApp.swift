@@ -20,17 +20,13 @@ struct STedApplication: App {
                 .onAppear { appDelegate.engine = engine }
 #endif
                 .task {
+                    if engine.song == nil {
+                        engine.newProject()
+                    }
                     do {
                         try await engine.prepareAudio()
                     } catch {
                         engine.reportAudioError(error)
-                    }
-                    if ProcessInfo.processInfo.arguments.contains("--demo") {
-                        do {
-                            try engine.loadDemo()
-                        } catch {
-                            engine.reportError(error)
-                        }
                     }
                 }
         }
